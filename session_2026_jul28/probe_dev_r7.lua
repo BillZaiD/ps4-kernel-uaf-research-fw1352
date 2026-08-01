@@ -1,0 +1,5 @@
+print("PING-from-R7")
+local S = rawget(_G, "syscall")
+pcall(S.resolve, { getpid = 20 })
+print(string.format("pid=%d", S.getpid() and (type(S.getpid())=="table" and (S.getpid().h*4294967296+S.getpid().l) or tonumber(tostring(S.getpid()))) or -1))
+print("R7-DONE")

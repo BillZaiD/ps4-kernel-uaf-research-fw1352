@@ -20,9 +20,14 @@ def send_payload(ip, port, filepath):
         sys.exit(1)
     
     with open(filepath, 'rb') as f:
-        payload = f.read()
+        lua_code = f.read()
     
-    print(f"[*] Sending {len(payload)} bytes from {filepath}")
+    # Protocol: [size:8bytes LE][lua_code]
+    import struct
+    size = struct.pack('<Q', len(lua_code))
+    payload = size + lua_code
+    
+    print(f"[*] Sending {len(lua_code)} bytes from {filepath}")
     print(f"[*] Target: {ip}:{port}")
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

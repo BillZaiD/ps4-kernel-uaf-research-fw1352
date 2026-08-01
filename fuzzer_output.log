@@ -1,0 +1,244 @@
+
+  ╔══════════════════════════════════════════════╗
+  ║   PS4 FW 13.52 Advanced Fuzzer               ║
+  ║   Persistent · Resumable · Kali-Integrated   ║
+  ╚══════════════════════════════════════════════╝
+  Tools: nmap=✔ | scapy=✔
+  Target: 192.168.100.61:9026
+  Log: /data/data/com.termux/files/home/PS4-Kernel-Research-FW1352/fuzz_logs
+  Retry: every 15s (infinite)
+        
+
+  [scan] Quick port check...
+  [scan] Open ports: [9026, 9295]
+
+────────────────────────────────────────────────────────────
+  Strategy: basic
+  Total cases: 93
+────────────────────────────────────────────────────────────
+
+  [connect] waiting for 192.168.100.61:9026...
+  [20:08:37] ⏳ Waiting for PS4 (0s elapsed)...
+  [20:09:57] ⏳ Waiting for PS4 (60s elapsed)...
+  [20:10:57] ⏳ Waiting for PS4 (120s elapsed)...
+  [✓ connected] 93 tests remaining
+    ⚡ [585] z585 = 0x0000000000000001
+  [ 64.5%] +37 done, 33 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+
+  ────────────────────────────────────────
+  Strategy 'basic' complete:
+    Total results: 37
+    Interesting:   1
+    Crashes:       0
+    Top findings:
+      [585] z585 = 0x0000000000000001
+
+────────────────────────────────────────────────────────────
+  Strategy: buffer
+  Total cases: 372
+────────────────────────────────────────────────────────────
+
+  [connect] waiting for 192.168.100.61:9026...
+  [20:11:45] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 372 tests remaining
+    ⚡ [585] b585_0 = 0x0000000000000001
+  [ 16.1%] +15 done, 312 left, 0 crashes
+  [ 32.3%] +15 done, 252 left, 0 crashes
+    ⚡ [624] b624_0 = 0x0000000000000c1a
+  [ 48.4%] +15 done, 192 left, 0 crashes
+  [ 64.5%] +15 done, 132 left, 0 crashes
+  [ 80.6%] +15 done, 72 left, 0 crashes
+  [ 96.8%] +1 done, 12 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+
+  ────────────────────────────────────────
+  Strategy 'buffer' complete:
+    Total results: 76
+    Interesting:   2
+    Crashes:       0
+    Top findings:
+      [585] b585_0 = 0x0000000000000001
+      [624] b624_0 = 0x0000000000000c1a
+
+────────────────────────────────────────────────────────────
+  Strategy: edge
+  Total cases: 289
+────────────────────────────────────────────────────────────
+
+  [connect] waiting for 192.168.100.61:9026...
+  [20:12:07] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 289 tests remaining
+    ⚡ [585] e585_a1_1 = 0x0000000000000001
+  [ 20.8%] +4 done, 229 left, 0 crashes
+  [ 41.5%] +5 done, 169 left, 0 crashes
+  [ 62.3%] +4 done, 109 left, 0 crashes
+    ⚡ [624] e624_a1_1 = 0x0000000000000bcc
+  [ 83.0%] +5 done, 49 left, 0 crashes
+  [100.0%] +3 done, 0 left, 0 crashes
+
+  ────────────────────────────────────────
+  Strategy 'edge' complete:
+    Total results: 21
+    Interesting:   2
+    Crashes:       0
+    Top findings:
+      [585] e585_a1_1 = 0x0000000000000001
+      [624] e624_a1_1 = 0x0000000000000bcc
+
+────────────────────────────────────────────────────────────
+  Strategy: exhaustive
+  Total cases: 930
+────────────────────────────────────────────────────────────
+
+  [connect] waiting for 192.168.100.61:9026...
+  [✓ connected] 930 tests remaining
+    ⚡ [585] x585_p0 = 0x0000000000000001
+  [  6.5%] +6 done, 870 left, 0 crashes
+  [ 12.9%] +6 done, 810 left, 0 crashes
+  [ 19.4%] +6 done, 750 left, 0 crashes
+  [ 25.8%] +6 done, 690 left, 0 crashes
+  [ 32.3%] +6 done, 630 left, 0 crashes
+  [ 38.7%] +6 done, 570 left, 0 crashes
+  [ 45.2%] +1 done, 510 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+  [connect] waiting for 192.168.100.61:9026...
+  [20:12:31] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 450 tests remaining
+  [ 58.1%] +6 done, 390 left, 0 crashes
+  [ 64.5%] +6 done, 330 left, 0 crashes
+  [ 71.0%] +6 done, 270 left, 0 crashes
+    ⚡ [653] x653_p0 = 0x0000000000000016
+  [ 77.4%] +6 done, 210 left, 0 crashes
+  [ 83.9%] +4 done, 150 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+  [connect] waiting for 192.168.100.61:9026...
+  [20:12:53] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 90 tests remaining
+  [ 96.8%] +6 done, 30 left, 0 crashes
+  [100.0%] +3 done, 0 left, 0 crashes
+
+  ────────────────────────────────────────
+  Strategy 'exhaustive' complete:
+    Total results: 74
+    Interesting:   2
+    Crashes:       0
+    Top findings:
+      [585] x585_p0 = 0x0000000000000001
+      [653] x653_p0 = 0x0000000000000016
+
+────────────────────────────────────────────────────────────
+  Strategy: random
+  Total cases: 465
+────────────────────────────────────────────────────────────
+
+  [connect] waiting for 192.168.100.61:9026...
+  [✓ connected] 465 tests remaining
+    ⚡ [585] r585_i0 = 0x0000000000000001
+    ⚡ [624] r624_i0 = 0x0000000000000c1a
+  [ 12.9%] +60 done, 405 left, 0 crashes
+  [ 25.8%] +16 done, 345 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+  [connect] waiting for 192.168.100.61:9026...
+  [20:13:14] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 285 tests remaining
+    ⚡ [585] r585_i2 = 0x0000000000000001
+    ⚡ [624] r624_i2 = 0x0000000000000c1a
+  [ 51.6%] +60 done, 225 left, 0 crashes
+  [ 64.5%] +22 done, 165 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+  [connect] waiting for 192.168.100.61:9026...
+  [20:13:35] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 105 tests remaining
+  [ 90.3%] +2 done, 45 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+
+  ────────────────────────────────────────
+  Strategy 'random' complete:
+    Total results: 160
+    Interesting:   4
+    Crashes:       0
+    Top findings:
+      [585] r585_i0 = 0x0000000000000001
+      [624] r624_i0 = 0x0000000000000c1a
+      [585] r585_i2 = 0x0000000000000001
+      [624] r624_i2 = 0x0000000000000c1a
+
+────────────────────────────────────────────────────────────
+  Strategy: boundary
+  Total cases: 1116
+────────────────────────────────────────────────────────────
+
+  [connect] waiting for 192.168.100.61:9026...
+  [20:13:55] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 1116 tests remaining
+    ⚡ [585] bnd585_0 = 0x0000000000000001
+  [  5.4%] +5 done, 1056 left, 0 crashes
+  [ 10.8%] +5 done, 996 left, 0 crashes
+  [ 16.1%] +5 done, 936 left, 0 crashes
+  [ 21.5%] +5 done, 876 left, 0 crashes
+  [ 26.9%] +5 done, 816 left, 0 crashes
+  [ 32.3%] +5 done, 756 left, 0 crashes
+  [ 37.6%] +5 done, 696 left, 0 crashes
+  [ 43.0%] +2 done, 636 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+  [connect] waiting for 192.168.100.61:9026...
+  [20:14:17] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 576 tests remaining
+  [ 53.8%] +5 done, 516 left, 0 crashes
+  [ 59.1%] +5 done, 456 left, 0 crashes
+  [ 64.5%] +5 done, 396 left, 0 crashes
+  [ 69.9%] +5 done, 336 left, 0 crashes
+    ⚡ [653] bnd653_0 = 0x0000000000000016
+  [ 75.3%] +5 done, 276 left, 0 crashes
+  [ 80.6%] +5 done, 216 left, 0 crashes
+  [ 86.0%] +1 done, 156 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+  [connect] waiting for 192.168.100.61:9026...
+  [20:14:39] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 96 tests remaining
+  [ 96.8%] +5 done, 36 left, 0 crashes
+  [100.0%] +3 done, 0 left, 0 crashes
+
+  ────────────────────────────────────────
+  Strategy 'boundary' complete:
+    Total results: 76
+    Interesting:   2
+    Crashes:       0
+    Top findings:
+      [585] bnd585_0 = 0x0000000000000001
+      [653] bnd653_0 = 0x0000000000000016
+
+────────────────────────────────────────────────────────────
+  Strategy: mutation
+  Total cases: 279
+────────────────────────────────────────────────────────────
+
+  [connect] waiting for 192.168.100.61:9026...
+  [✓ connected] 279 tests remaining
+    ⚡ [585] m585_0 = 0x0000000000000001
+  [ 21.5%] +20 done, 219 left, 0 crashes
+  [ 43.0%] +17 done, 159 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+  [connect] waiting for 192.168.100.61:9026...
+  [20:14:59] ⏳ Waiting for PS4 (0s elapsed)...
+  [✓ connected] 99 tests remaining
+    ⚡ [653] m653_0 = 0x0000000000000016
+  [ 86.0%] +16 done, 39 left, 0 crashes
+  [!] PS4 crashed — waiting for restart...
+
+  ────────────────────────────────────────
+  Strategy 'mutation' complete:
+    Total results: 53
+    Interesting:   2
+    Crashes:       0
+    Top findings:
+      [585] m585_0 = 0x0000000000000001
+      [653] m653_0 = 0x0000000000000016
+
+  ==================================================
+  ALL STRATEGIES COMPLETE
+  Run: python3 ps4_fuzzer.py basic,buffer,edge,exhaustive,random,boundary,mutation --scan
+  Logs: /data/data/com.termux/files/home/PS4-Kernel-Research-FW1352/fuzz_logs
+==================================================
+

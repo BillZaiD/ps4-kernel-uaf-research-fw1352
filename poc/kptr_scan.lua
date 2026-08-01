@@ -1,85 +1,41 @@
 --[[
-    Kernel Pointer Scanner
-    Scans all available sysctl paths for kernel pointers
-    
-    Tests: kern.* (OIDs 1-50), kern.proc.* (via fcall),
-           random device, libkernel memory
---]]
+    kptr_scan.lua
+    Safe forward-only scan for kernel pointers near wrapper
+]]
 
-local utils = require("lib.ps4_utils")
-
-utils.banner("Kernel Pointer Scanner")
-
+local mem = rawget(_G, "memory")
 local S = rawget(_G, "syscall")
-local M = rawget(_G, "memory")
 
-utils.resolve()
-
-print("\n[*] Scanning kern.* sysctl for kernel pointers")
-
-local oid = M.alloc(16)
-local out = M.alloc(4096)
-local outlen = M.alloc(8)
-local total_found = 0
-
-for sub = 1, 50 do
-    M.write_dword(oid, 1)       -- CTL_KERN
-    M.write_dword(oid + 4, sub) -- kern.X
-    M.write_qword(outlen, 4096)
-    for j = 0, 4095 do M.write_byte(out + j, 0) end
-    
-    local r = utils.fcall(202, oid, 8, out, outlen)
-    if r == 0 then
-        local len = M.tonum(M.read_qword(outlen))
-        if len > 0 then
-            local kps = utils.scan_kptrs(out, len)
-            if #kps > 0 then
-                total_found = total_found + #kps
-                print(string.format("[!] kern.%d: %d bytes, %d kernel ptrs", sub, len, #kps))
-                for _, kp in ipairs(kps) do
-                    print(string.format("    +0x%x: 0x%x", kp.offset, kp.value))
-                end
-            end
-        end
-    end
+local function tonn(v)
+    if v == nil then return 0 end
+    if type(v) == "table" and v.h then return v.h * 4294967296 + v.l end
+    return tonumber(tostring(v or 0)) or 0
 end
 
-print(string.format("\n[*] Total kernel pointers found: %d", total_found))
-if total_found == 0 then
-    print("[!] Sony has sanitized all kern.* sysctl output")
+local function toaddr(v)
+    if v == nil then return 0 end
+    if type(v) == "table" and v.h then return v.h * 4294967296 + v.l end
+    return tonumber(tostring(v))
 end
 
--- Scan /dev/random
-print("\n[*] Scanning /dev/random for kernel pointers")
-local path = M.alloc(64)
-utils.write_str(path, "/dev/random")
-local fd = utils.fcall(5, path, 0, 0)
-if fd >= 0 then
-    local buf = M.alloc(4096)
-    local r = utils.fcall(3, fd, buf, 4096)
-    if r > 0 and r <= 4096 then
-        local kps = utils.scan_kptrs(buf, r)
-        print(string.format("[*] /dev/random: %d bytes, %d kernel ptrs", r, #kps))
-        for _, kp in ipairs(kps) do
-            print(string.format("    +0x%x: 0x%x", kp.offset, kp.value))
-        end
-    end
-    utils.fcall(6, fd)
+local function is_kptr(v)
+    return v >= 0xFFFF800000000000 and v < 0xFFFFFFFFFFFFFFFF
 end
 
--- Scan libkernel
-print("\n[*] Scanning libkernel for kernel pointers")
-local libbase = 0x80a67c000
+local wrapper = toaddr(S.syscall_wrapper[454])
+local total = 0
 local kptrs = 0
-for j = 0, 0x100000 - 8, 8 do
-    local qv = M.tonum(M.mem.read_qword(libbase + j))
-    if utils.is_kernel_ptr(qv) then
+local last_print = 0
+
+for off = 0, 0x200000, 8 do  -- 2MB forward
+    local v = tonn(mem.read_qword(wrapper + off))
+    total = total + 1
+    if is_kptr(v) then
         kptrs = kptrs + 1
         if kptrs <= 10 then
-            print(string.format("    +0x%x: 0x%x", j, qv))
+            print(string.format("k+%x: %x", off, v))
         end
     end
 end
-print(string.format("[*] libkernel: scanned 1MB, %d kernel ptrs", kptrs))
-
-print("\n[*] Scan complete")
+print(string.format("tot=%d k=%d", total, kptrs))
+print("ok")
