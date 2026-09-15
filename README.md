@@ -5,8 +5,8 @@
 | Field | Value |
 |-------|-------|
 | **Platform** | Sony PlayStation 4 (Orbis OS) |
-| **Firmware** | 13.52 |
-| **Kernel Base** | FreeBSD 9 (heavily modified by Sony) |
+| **Firmware** | 13.52 (HeerBSD r228995, J02697906) |
+| **Kernel Base** | FreeBSD 13.0 syscall ABI (HeerBSD r228995, heavily modified by Sony — corrected from "FreeBSD 9") |
 | **Vulnerability Class** | Use-After-Free (CWE-416) |
 | **Affected Component** | BSD kqueue/knote subsystem |
 | **Impact** | Kernel type confusion, potential privilege escalation |

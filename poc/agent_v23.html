@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>agent_v23 - check() diagnostic baseline</title></head>
+<body>
+<h2>PS4 Agent v23 - check() diagnostic (no UAF)</h2>
+<div id="ver">v23 (check diagnostic)</div>
+<div id="status">Connecting...</div>
+<div id="log"></div>
+<script>
+var SERVER = 'http://192.168.100.2:8080';
+var el = document.getElementById('log');
+var statusEl = document.getElementById('status');
+function log(m) {
+    var d = document.createElement('div');
+    d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + m;
+    el.appendChild(d);
+    window.scrollTo(0, document.body.scrollHeight);
+}
+function sendResult(tag, data) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/result?tag=' + encodeURIComponent(tag) + '&r=' + encodeURIComponent(String(data)), false);
+        x.send();
+        log('SENT [' + tag + ']: ' + String(data).substring(0, 200));
+    } catch(e) { log('SEND ERROR: ' + e); }
+}
+function sendLog(m) {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/log?m=' + encodeURIComponent(m), false);
+        x.send();
+    } catch(e) {}
+}
+function poll() {
+    try {
+        var x = new XMLHttpRequest();
+        x.open('GET', SERVER + '/poll', false);
+        x.send();
+        var resp = x.responseText;
+        if (resp && resp !== 'null') { return JSON.parse(resp); }
+    } catch(e) {}
+    return null;
+}
+
+var commands = {
+    'info': function() {
+        return JSON.stringify({ ua: navigator.userAgent, check: (document.fonts ? typeof document.fonts.check : 'nofonts') });
+    },
+    'check_diag': function() {
+        return new Promise(function(resolve) {
+            var out = [];
+            function push(m) { out.push(m); sendLog('DIAG: ' + m); }
+            var done = false;
+            function finish() { if (!done) { done = true; clearTimeout(timer); resolve(out.join('\n')); } }
+            var timer = setTimeout(finish, 30000);
+
+            (async function() {
+                try {
+                    push('== check() DIAGNOSTIC - no UAF ==');
+
+                    // Test 1: empty document (no @font-face rules)
+                    push('--- 1. no rules at all ---');
+                    push('check(1em serif,A)=' + document.fonts.check('1em serif','A'));
+                    push('check(1em bbb,A)=' + document.fonts.check('1em bbb','A'));
+                    push('check(1em ,A)=' + document.fonts.check('1em ','A'));
+                    push('check(1em,A)=' + document.fonts.check('1em','A'));
+
+                    // Test 2: add a single @font-face with known range
+                    push('--- 2. add @font-face {family:test, range:U+0041-U+0042} ---');
+                    var st = document.createElement('style');
+                    document.head.appendChild(st);
+                    st.sheet.insertRule('@font-face{font-family:test;src:local(Helvetica);unicode-range:U+0041,U+0042;}');
+                    // Give it a moment to load
+                    await new Promise(function(r){ setTimeout(r, 2000); });
+                    push('fonts.size=' + document.fonts.size);
+                    push('check(1em test,A)=' + document.fonts.check('1em test','A'));
+                    push('check(1em test,B)=' + document.fonts.check('1em test','B'));
+                    push('check(1em test,C)=' + document.fonts.check('1em test','C'));
+                    push('check(1em test,D)=' + document.fonts.check('1em test','D'));
+                    push('check(1em test,z)=' + document.fonts.check('1em test','z'));
+                    push('check(1em nosuch,A)=' + document.fonts.check('1em nosuch','A'));
+                    push('check(1em test,AB)=' + document.fonts.check('1em test','AB'));
+                    push('check(1em test,ABC)=' + document.fonts.check('1em test','ABC'));
+
+                    // Test 3: two families
+                    push('--- 3. add @font-face {family:test2, range:U+0043} ---');
+                    st.sheet.insertRule('@font-face{font-family:test2;src:local(Helvetica);unicode-range:U+0043;}');
+                    await new Promise(function(r){ setTimeout(r, 2000); });
+                    push('fonts.size=' + document.fonts.size);
+                    push('check(1em test2,C)=' + document.fonts.check('1em test2','C'));
+                    push('check(1em test2,D)=' + document.fonts.check('1em test2','D'));
+                    push('check(1em test,test2,A)=' + document.fonts.check('1em test,test2','A'));
+                    push('check(1em test,test2,C)=' + document.fonts.check('1em test,test2','C'));
+                    push('check(1em test,test2,D)=' + document.fonts.check('1em test,test2','D'));
+
+                    // Test 4: codepoint diversity
+                    push('--- 4. range U+0041-U+0042 vs many codepoints ---');
+                    push('check(1em test,"\\u0040")=' + document.fonts.check('1em test', '\u0040')); // before range
+                    push('check(1em test,"\\u0041")=' + document.fonts.check('1em test', '\u0041')); // at start
+                    push('check(1em test,"\\u0042")=' + document.fonts.check('1em test', '\u0042')); // at end
+                    push('check(1em test,"\\u0043")=' + document.fonts.check('1em test', '\u0043')); // after range
+                    push('check(1em test,"\\u007A")=' + document.fonts.check('1em test', '\u007A')); // z
+                    push('check(1em test,"\\u00FF")=' + document.fonts.check('1em test', '\u00FF')); // ÿ
+                    push('check(1em test,"\\u0100")=' + document.fonts.check('1em test', '\u0100')); // Ā
+                    push('check(1em test,"\\uFFFF")=' + document.fonts.check('1em test', '\uFFFF')); // max BMP
+
+                    // Test 5: document.fonts.add with known loaded font
+                    push('--- 5. document.fonts.add(Face) ---');
+                    var f = new FontFace('added', 'local(Helvetica)', { unicodeRange: 'U+0055-U+0056' });
+                    document.fonts.add(f);
+                    await new Promise(function(r){ setTimeout(r, 1000); });
+                    push('fonts.size=' + document.fonts.size);
+                    push('check(1em added,U)=' + document.fonts.check('1em added','U'));
+                    push('check(1em added,V)=' + document.fonts.check('1em added','V'));
+                    push('check(1em added,W)=' + document.fonts.check('1em added','W'));
+
+                    push('== DIAGNOSTIC DONE ==');
+                } catch(e) {
+                    push('FATAL: ' + e + (e && e.stack ? ' | ' + e.stack : ''));
+                } finally {
+                    clearTimeout(timer);
+                    finish();
+                }
+            })();
+        });
+    }
+};
+
+log('PS4 Agent v23 diagnostic started');
+function mainLoop() {
+    try {
+        var cmd = poll();
+        if (cmd && cmd.action) {
+            log('CMD: ' + cmd.action + (cmd.args ? ' ' + JSON.stringify(cmd.args) : ''));
+            if (commands[cmd.action]) {
+                try {
+                    var result = commands[cmd.action].apply(null, cmd.args || []);
+                    if (result && typeof result.then === 'function') {
+                        result.then(function(val) { sendResult(cmd.action, val); })
+                              .catch(function(e) { sendResult(cmd.action, 'PROMISE REJECT: ' + (e && e.stack || e)); });
+                    } else {
+                        sendResult(cmd.action, result);
+                    }
+                } catch(e) { sendResult(cmd.action, 'THROW: ' + (e && e.stack || e)); }
+            } else {
+                sendResult(cmd.action, 'UNKNOWN: ' + cmd.action);
+            }
+        }
+    } catch(e) { log('LOOP ERROR: ' + e); }
+    statusEl.textContent = 'Active | ' + new Date().toLocaleTimeString();
+    setTimeout(mainLoop, 500);
+}
+mainLoop();
+
+// ===== AUTO-RUN =====
+function autoStart() {
+    log('AUTO: check_diag');
+    try {
+        var result = commands['check_diag']();
+        if (result && typeof result.then === 'function') {
+            result.then(function(val) { sendResult('check_diag', val); })
+                  .catch(function(e) { sendResult('check_diag', 'ERR: ' + e); });
+        } else { sendResult('check_diag', result); }
+    } catch(e) { sendResult('check_diag', 'THROW: ' + e); }
+}
+setTimeout(function() {
+    try { document.fonts.ready.then(function(){ setTimeout(autoStart, 300); }); }
+    catch(e) { autoStart(); }
+}, 1000);
+
+var TOKEN = Math.random().toString(36).slice(2, 10);
+sendLog('PAGE:new:v23:' + TOKEN);
+try {
+    var hb = new Worker(URL.createObjectURL(new Blob([
+        'var t="' + TOKEN + '";setInterval(function(){var x=new XMLHttpRequest();x.open("GET","' + SERVER + '/log?m=BEAT:"+t,false);x.send();},2000);'
+    ], { type: 'application/javascript' })));
+} catch(e) { log('hb fail: ' + e); }
+</script>
+</body></html>

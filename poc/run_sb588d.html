@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ps4 13.52 netcontrol ucred UAF (dup+munmap fixed, fresh module)</title>
+<style>
+  html, body { margin:0; padding:0; background:#0b0d10; color:#c8ced8;
+               font:15px/1.45 "Segoe UI", system-ui, sans-serif; }
+  #wrap { padding:16px 18px; }
+  #state { font-size:22px; font-weight:700; margin:0 0 10px; }
+  #out { white-space:pre-wrap; font:12px/1.45 Consolas, monospace;
+         background:#11151b; border:1px solid #1e2732; border-radius:5px;
+         padding:10px 12px; height:calc(100vh - 141px); overflow-y:auto; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="state">loading 13.52 netcontrol ucred UAF (d-rcl)...</div>
+  <div id="out"></div>
+</div>
+<script type="module">
+function report(tag, msg) {
+  var o = document.getElementById("out");
+  if (o) o.textContent += tag + ": " + msg + "\n";
+  try {
+    var x = new XMLHttpRequest();
+    x.open("GET", "log?m=" + encodeURIComponent("[" + tag + "] " + msg), true);
+    x.send();
+  } catch (e) {}
+}
+window.addEventListener("error", function (e) {
+  report("MODULE-FAIL", (e.message || e.type || "unknown") + " " + (e.filename || "") + ":" + (e.lineno || ""));
+}, true);
+window.addEventListener("unhandledrejection", function (e) {
+  var r = e.reason;
+  var msg;
+  try { msg = "name=" + r.name + " message=" + r.message; }
+  catch (ex) { msg = String(r); }
+  report("MODULE-REJECT", msg);
+});
+try {
+  import("./chain_sb588d_rcl.js");
+} catch (err) {
+  report("IMPORT-CATCH", String(err && err.message ? err.message : err));
+}
+</script>
+</body>
+</html>
